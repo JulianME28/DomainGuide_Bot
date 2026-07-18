@@ -1,0 +1,257 @@
+"""Розпізнавання країн і мов у тексті користувача.
+
+Два окремі резолвери — для країни й для мови. Це не примха: країна й мова
+в цьому проєкті означають різні речі й дають різні відповіді, тому змішувати
+їх в одну функцію не можна.
+
+    «Німеччина», «.de»  → КРАЇНА  → рахуємо за доменною зоною
+    «німецькою»          → МОВА    → рахуємо за колонкою мови
+
+ГОЛОВНА ХИТРІСТЬ ЦЬОГО МОДУЛЯ — порядок розпізнавання.
+
+Українські назви країн і мов часто починаються однаково:
+
+    «Англія»    і  «англійською»    → обидва починаються на «англі»
+    «Італія»    і  «італійською»    → обидва починаються на «італі»
+    «Латвія»    і  «латвійською»    → обидва починаються на «латві»
+    «Україна»   і  «українською»    → обидва починаються на «україн»
+
+Тому спершу шукаємо МОВУ, потім «затираємо» знайдений шматок тексту
+пробілами — і лише після цього шукаємо країну. Так слово «англійською»
+вже не може перетворитися на країну Англія.
+
+Ще одне правило: у вільному тексті НЕ використовуються голі двобуквені коди.
+«in», «is», «no», «it» — це звичайні англійські слова, і вони давали б купу
+хибних збігів. Але зона з крапкою («.de», «.it») однозначна й тому дозволена.
+"""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass
+
+from app.dictionary.countries import COUNTRIES, Country, country_by_zone
+from app.dictionary.languages import LANGUAGES, Language
+from app.dictionary.normalize import find_zone_mentions, mask_span, normalize_text
+from app.dictionary.zones import is_global_zone
+
+_WORD_WITH_SPAN = re.compile(r"[0-9a-zа-яёєіїґ]+")
+
+
+@dataclass(frozen=True, slots=True)
+class Match:
+    """Де саме в тексті знайдено збіг і наскільки він «вагомий»."""
+
+    start: int
+    end: int
+
+    @property
+    def length(self) -> int:
+        return self.end - self.start
+
+
+@dataclass(frozen=True, slots=True)
+class EntityScan:
+    """Що вдалося впізнати у вільному запиті."""
+
+    country: Country | None = None
+    language: Language | None = None
+    zones: tuple[str, ...] = ()
+    """Явно згадані зони країн: користувач написав «.de»."""
+
+    global_zones: tuple[str, ...] = ()
+    """Явно згадані глобальні зони: «.com», «.net». Нікому не належать."""
+
+    @property
+    def is_empty(self) -> bool:
+        return not (self.country or self.language or self.zones or self.global_zones)
+
+
+def _tokens_with_spans(text: str) -> list[tuple[str, int, int]]:
+    """Слова тексту разом із позиціями — позиції потрібні для «затирання»."""
+    return [(m.group(0), m.start(), m.end()) for m in _WORD_WITH_SPAN.finditer(text)]
+
+
+def _match_phrases(text: str, phrases: tuple[str, ...]) -> Match | None:
+    """Шукає багатослівні назви: «united kingdom», «південна африка»."""
+    best: Match | None = None
+    for phrase in phrases:
+        if not phrase:
+            continue
+        position = text.find(phrase)
+        while position != -1:
+            start, end = position, position + len(phrase)
+            # Перевіряємо, що це окрема фраза, а не шматок довшого слова.
+            before_ok = start == 0 or not text[start - 1].isalnum()
+            after_ok = end == len(text) or not text[end].isalnum()
+            if before_ok and after_ok:
+                candidate = Match(start, end)
+                if best is None or candidate.length > best.length:
+                    best = candidate
+                break
+            position = text.find(phrase, position + 1)
+    return best
+
+
+def _match_tokens(
+    tokens: list[tuple[str, int, int]],
+    exact: frozenset[str] | tuple[str, ...],
+    stems: tuple[str, ...],
+    *,
+    short_codes: tuple[str, ...] = (),
+    allow_short: bool = False,
+) -> Match | None:
+    """Шукає збіг серед окремих слів тексту.
+
+    Спершу точні збіги слів, потім збіги за початком слова (стеми) —
+    саме вони ловлять українські відмінки.
+    """
+    best: Match | None = None
+
+    for token, start, end in tokens:
+        matched = token in exact
+        if not matched and allow_short and token in short_codes:
+            matched = True
+        if not matched:
+            matched = any(stem and token.startswith(stem) for stem in stems)
+
+        if matched:
+            candidate = Match(start, end)
+            if best is None or candidate.length > best.length:
+                best = candidate
+
+    return best
+
+
+# ---------------------------------------------------------------------------
+# Резолвер МОВИ
+# ---------------------------------------------------------------------------
+
+
+def find_language_match(text: str, *, allow_short: bool = False) -> tuple[Language, Match] | None:
+    """Шукає мову в тексті. Повертає мову і місце, де її знайдено.
+
+    allow_short=True дозволяє короткі коди («fr»). Це доречно, коли бот уже
+    спитав саме про мову і користувач відповідає одним словом. У вільному
+    тексті короткі коди вимкнені — вони дають хибні збіги.
+    """
+    normalized = normalize_text(text)
+    if not normalized:
+        return None
+
+    tokens = _tokens_with_spans(normalized)
+    best: tuple[Language, Match] | None = None
+
+    for language in LANGUAGES.values():
+        match = _match_tokens(
+            tokens,
+            language.synonyms,
+            language.stems_uk,
+            short_codes=(language.code,),
+            allow_short=allow_short,
+        )
+        if match is None:
+            continue
+        if best is None or match.length > best[1].length:
+            best = (language, match)
+
+    return best
+
+
+def resolve_language(text: str, *, allow_short: bool = False) -> Language | None:
+    """Мова за текстом користувача. None — не впізнали."""
+    found = find_language_match(text, allow_short=allow_short)
+    return found[0] if found else None
+
+
+# ---------------------------------------------------------------------------
+# Резолвер КРАЇНИ
+# ---------------------------------------------------------------------------
+
+
+def find_country_match(text: str, *, allow_short: bool = False) -> tuple[Country, Match] | None:
+    """Шукає країну в тексті: за назвою, синонімом або доменною зоною."""
+    normalized = normalize_text(text)
+    if not normalized:
+        return None
+
+    # Явна зона («.de») — найнадійніший сигнал, тому перевіряємо її першою.
+    for zone, start, end in find_zone_mentions(normalized):
+        country = country_by_zone(zone)
+        if country is not None:
+            return country, Match(start, end)
+
+    tokens = _tokens_with_spans(normalized)
+    best: tuple[Country, Match] | None = None
+
+    for country in COUNTRIES.values():
+        match = _match_phrases(normalized, country.phrases)
+        token_match = _match_tokens(
+            tokens,
+            country.synonyms | frozenset(country.exact_uk),
+            country.stems_uk,
+            short_codes=(country.code,),
+            allow_short=allow_short,
+        )
+        if token_match is not None and (match is None or token_match.length > match.length):
+            match = token_match
+
+        if match is None:
+            continue
+        if best is None or match.length > best[1].length:
+            best = (country, match)
+
+    return best
+
+
+def resolve_country(text: str, *, allow_short: bool = False) -> Country | None:
+    """Країна за текстом користувача. None — не впізнали."""
+    found = find_country_match(text, allow_short=allow_short)
+    return found[0] if found else None
+
+
+# ---------------------------------------------------------------------------
+# Повне сканування вільного тексту
+# ---------------------------------------------------------------------------
+
+
+def scan_entities(text: str) -> EntityScan:
+    """Розбирає вільний запит: що тут країна, що мова, а що доменна зона.
+
+    Порядок принциповий (пояснення на початку файлу):
+      1. мова — і одразу «затираємо» знайдене слово;
+      2. країна — вже по затертому тексту;
+      3. явні зони — вони однозначні й шукаються окремо.
+    """
+    normalized = normalize_text(text)
+    if not normalized:
+        return EntityScan()
+
+    # Крок 1: мова. Короткі коди вимкнені — це вільний текст.
+    language_found = find_language_match(normalized, allow_short=False)
+    language = language_found[0] if language_found else None
+
+    # Крок 2: затираємо слово мови, щоб воно не перетворилося на країну.
+    text_for_country = normalized
+    if language_found is not None:
+        match = language_found[1]
+        text_for_country = mask_span(normalized, match.start, match.end)
+
+    country_found = find_country_match(text_for_country, allow_short=False)
+    country = country_found[0] if country_found else None
+
+    # Крок 3: явні зони. Розділяємо на «країнні» й глобальні.
+    country_zones: list[str] = []
+    global_zones: list[str] = []
+    for zone, _start, _end in find_zone_mentions(normalized):
+        if is_global_zone(zone):
+            global_zones.append(zone)
+        elif country_by_zone(zone) is not None:
+            country_zones.append(zone)
+
+    return EntityScan(
+        country=country,
+        language=language,
+        zones=tuple(dict.fromkeys(country_zones)),
+        global_zones=tuple(dict.fromkeys(global_zones)),
+    )
