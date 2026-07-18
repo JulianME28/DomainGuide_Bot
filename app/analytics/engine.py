@@ -155,14 +155,14 @@ def _in_range(value: float | None, minimum: float | None, maximum: float | None)
     return not (maximum is not None and value > maximum)
 
 
-def _passes_metrics(donor: Donor, query: DonorQuery) -> bool:
+def passes_metrics(donor: Donor, query: DonorQuery) -> bool:
     """Чи проходить донор фільтри DR і трафіку."""
     return _in_range(donor.dr, query.dr_min, query.dr_max) and _in_range(
         donor.traffic, query.traffic_min, query.traffic_max
     )
 
 
-def _passes_core(donor: Donor, query: DonorQuery) -> bool:
+def passes_core(donor: Donor, query: DonorQuery) -> bool:
     """Чи потрапляє донор у ядро запиту."""
     zones = query.core_zones
     if zones and donor.zone not in zones:
@@ -172,7 +172,7 @@ def _passes_core(donor: Donor, query: DonorQuery) -> bool:
     if languages and donor.language not in languages:
         return False
 
-    return _passes_metrics(donor, query)
+    return passes_metrics(donor, query)
 
 
 def select_core(dataset: Dataset, query: DonorQuery) -> list[Donor]:
@@ -180,7 +180,7 @@ def select_core(dataset: Dataset, query: DonorQuery) -> list[Donor]:
 
     Функція внутрішня: назовні з модуля йдуть тільки числа.
     """
-    return [donor for donor in dataset.donors if _passes_core(donor, query)]
+    return [donor for donor in dataset.donors if passes_core(donor, query)]
 
 
 # ---------------------------------------------------------------------------
@@ -231,7 +231,7 @@ def _language_addendum(dataset: Dataset, query: DonorQuery) -> LanguageAddendum 
         for donor in dataset.donors
         if donor.language in keys  # потрібна мова
         and donor.zone not in zones  # але НЕ в зоні ядра — без подвійного рахунку
-        and _passes_metrics(donor, query)  # ті самі фільтри DR/трафіку
+        and passes_metrics(donor, query)  # ті самі фільтри DR/трафіку
     )
 
     if count == 0:
