@@ -18,13 +18,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 
 from app.dictionary.countries import Country
 from app.dictionary.languages import Language
 
 
-class QueryKind(str, Enum):
+class QueryKind(StrEnum):
     """Вид запиту. Визначає, як показувати результат."""
 
     COUNTRY = "country"

@@ -42,8 +42,14 @@ class Settings:
     log_level: str
 
     def is_allowed(self, user_id: int) -> bool:
-        """Чи можна цьому Telegram ID користуватися ботом."""
-        return user_id in self.allowed_user_ids
+        """Чи можна цьому Telegram ID користуватися ботом.
+
+        Адмін проходить завжди, навіть якщо його забули дописати в
+        ALLOWED_USER_IDS. Перевірка стоїть саме тут, а не лише при читанні
+        .env: так правило «адмін завжди має доступ» діє за будь-яких умов і
+        не може загубитися.
+        """
+        return user_id in self.allowed_user_ids or user_id in self.admin_user_ids
 
     def is_admin(self, user_id: int) -> bool:
         """Чи має цей Telegram ID доступ до адмін-меню.

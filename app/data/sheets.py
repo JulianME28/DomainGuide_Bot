@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import gspread
@@ -94,19 +95,53 @@ class SheetsReader:
 
         return self._client
 
+    @property
+    def service_account_email(self) -> str:
+        """Пошта сервіс-акаунта з файлу-ключа.
+
+        Потрібна для повідомлення про помилку: саме цією поштою треба
+        поділитися таблицею, і людині зручніше побачити її одразу, ніж
+        шукати всередині JSON-файлу.
+        """
+        try:
+            data = json.loads(self._credentials_file.read_text(encoding="utf-8"))
+            return str(data.get("client_email", "")) or "(не вказано у файлі-ключі)"
+        except Exception:
+            return "(не вдалося прочитати файл-ключ)"
+
+    def _access_error(self, exc: Exception) -> SheetsError:
+        """Найчастіша помилка проєкту — таблицею не поділилися з ботом.
+
+        Google відповідає «403 The caller does not have permission», а
+        gspread перетворює це на голий PermissionError без пояснень.
+        Тому текст пишемо самі — з конкретною поштою, яку треба додати.
+        """
+        return SheetsError(
+            "Google не дав доступ до таблиці (помилка 403).\n\n"
+            "Найімовірніша причина: таблицею ще не поділилися з ботом.\n\n"
+            "Що зробити:\n"
+            "1. Відкрийте таблицю в Google Таблицях.\n"
+            "2. Натисніть «Поділитися» (Share).\n"
+            f"3. Додайте цю пошту: {self.service_account_email}\n"
+            "4. Виберіть рівень доступу «Переглядач» (Viewer) і збережіть.\n\n"
+            "Друга можлива причина — у .env вказано неправильний "
+            "GOOGLE_SPREADSHEET_ID."
+        )
+
     def _open_worksheet(self, sheet_name: str) -> gspread.Worksheet:
         """Відкриває конкретний аркуш таблиці."""
         client = self._connect()
         try:
             spreadsheet = client.open_by_key(self._spreadsheet_id)
+        except PermissionError as exc:
+            # gspread 6 кидає саме PermissionError замість APIError, коли
+            # Google відповідає 403. Без цієї гілки користувач побачив би
+            # порожнє «PermissionError» і не зрозумів би, що робити.
+            raise self._access_error(exc) from exc
         except gspread.exceptions.APIError as exc:
-            raise SheetsError(
-                "Google не дав доступ до таблиці.\n"
-                "Найчастіша причина: таблицею не поділилися з сервіс-акаунтом. "
-                "Відкрийте таблицю → «Поділитися» → додайте пошту з credentials.json "
-                "(поле client_email) з правами «Переглядач».\n"
-                f"Деталі: {exc}"
-            ) from exc
+            if "PERMISSION_DENIED" in str(exc) or "403" in str(exc):
+                raise self._access_error(exc) from exc
+            raise SheetsError(f"Google повернув помилку: {exc}") from exc
         except Exception as exc:
             raise SheetsError(f"Не вдалося відкрити таблицю: {type(exc).__name__}: {exc}") from exc
 

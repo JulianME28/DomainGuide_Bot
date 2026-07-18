@@ -1,0 +1,218 @@
+"""Тести карток результату.
+
+Найважливіше тут — порядок блоків. Мовний рядок має бути ОСТАННІМ, окремо
+від головного числа. Якщо він опиниться поруч із зоновим числом, їх легко
+сплутати й пообіцяти клієнту неіснуючих донорів.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from app.analytics.engine import run_query
+from app.analytics.query import DonorQuery
+from app.analytics.recommendations import build_recommendations
+from app.dictionary.countries import country_by_code
+from app.dictionary.languages import language_by_code
+from app.text.cards import (
+    LANGUAGE_MARK,
+    number,
+    plural_donors,
+    render_breakdown,
+    render_result,
+    render_unavailable,
+)
+
+
+def query_for(code: str, **filters) -> DonorQuery:
+    return DonorQuery(section_key="magic", country=country_by_code(code), **filters)
+
+
+class TestМножина:
+    @pytest.mark.parametrize(
+        ("count", "word"),
+        [
+            (1, "донор"), (2, "донори"), (3, "донори"), (4, "донори"),
+            (5, "донорів"), (11, "донорів"), (12, "донорів"), (14, "донорів"),
+            (21, "донор"), (22, "донори"), (25, "донорів"), (101, "донор"),
+            (111, "донорів"), (0, "донорів"),
+        ],
+    )  # fmt: skip
+    def test_форми_слова(self, count, word):
+        assert plural_donors(count) == word
+
+
+class TestЧисла:
+    @pytest.mark.parametrize(
+        ("value", "expected"),
+        [(32.0, "32"), (3133.3, "3 133"), (10000, "10 000"), (0, "0"), (None, "—")],
+    )
+    def test_форматування(self, value, expected):
+        assert number(value) == expected
+
+
+class TestПорядокБлоків:
+    async def test_мовний_рядок_останній(self, magic):
+        """Головна вимога до картки."""
+        card = render_result(run_query(magic, query_for("de")))
+
+        assert LANGUAGE_MARK in card
+        language_position = card.index(LANGUAGE_MARK)
+
+        for earlier in ("Знайдено донорів", "Середній DR", "Середній трафік", "похибка"):
+            assert card.index(earlier) < language_position, f"«{earlier}» має бути ДО мовного рядка"
+
+    async def test_мовний_рядок_після_рекомендацій(self, magic):
+        result = run_query(magic, query_for("de"))
+        recommendations = build_recommendations(magic, result.query)
+        card = render_result(result, recommendations=recommendations)
+
+        assert card.index("Суміжні країни") < card.index(LANGUAGE_MARK)
+
+    async def test_мовний_блок_завершує_повідомлення(self, magic):
+        """Після мовного блоку не має бути нічого, крім його ж попередження."""
+        card = render_result(run_query(magic, query_for("gb")))
+        tail = card[card.index(LANGUAGE_MARK) :]
+
+        assert "Знайдено" not in tail
+        assert "Середній" not in tail
+
+
+class TestДваЧислаВКартці:
+    async def test_зонове_і_мовне_числа_подані_окремо(self, magic):
+        card = render_result(run_query(magic, query_for("de")))
+
+        assert "Знайдено донорів:</b> 6" in card
+        assert "+ 4 донори німецькою мовою поза зоною .de" in card
+
+    async def test_сума_ніде_не_зʼявляється(self, magic):
+        """6 і 4 не мають перетворитися на 10 у жодному місці картки."""
+        card = render_result(run_query(magic, query_for("de")))
+
+        assert "10 донорів" not in card
+        assert "Знайдено донорів:</b> 10" not in card
+
+    async def test_формулювання_каже_поза_зоною(self, magic):
+        """Слова «поза зоною» — головна підказка, що це інша множина."""
+        card = render_result(run_query(magic, query_for("de")))
+        assert "поза зоною" in card
+
+    async def test_якщо_додатка_немає_рядка_теж_немає(self, magic):
+        card = render_result(run_query(magic, query_for("de", dr_min=100)))
+        assert LANGUAGE_MARK not in card
+
+
+class TestПопередженняПроСпільніМови:
+    async def test_англійська_попереджає(self, magic):
+        card = render_result(run_query(magic, query_for("gb")))
+        assert "пишуть багато країн" in card
+        assert "не лише Британія" in card
+
+    async def test_французька_не_попереджає(self, magic):
+        card = render_result(run_query(magic, query_for("fr")))
+        assert LANGUAGE_MARK in card, "мовний рядок має бути"
+        assert "пишуть багато країн" not in card, "а попередження — ні"
+
+    async def test_попередження_стоїть_після_мовного_рядка(self, magic):
+        card = render_result(run_query(magic, query_for("gb")))
+        assert card.index(LANGUAGE_MARK) < card.index("пишуть багато країн")
+
+
+class TestПопередженняПроПоказники:
+    async def test_мала_вибірка(self, magic):
+        """Туреччина в базі має одного донора — середні ненадійні."""
+        card = render_result(run_query(magic, query_for("tr")))
+        assert "менш ніж на трьох донорах" in card
+
+    async def test_похибка_завжди_згадується(self, magic):
+        card = render_result(run_query(magic, query_for("de")))
+        assert "до 30%" in card
+
+    async def test_порожній_результат(self, magic):
+        card = render_result(run_query(magic, query_for("jp")))
+        assert "не знайдено" in card
+        assert "до 30%" not in card, "для нуля похибка не має сенсу"
+
+
+class TestБезпекаКартки:
+    async def test_домен_не_витікає_в_картку(self, magic):
+        """Найважливіша перевірка безпеки на рівні тексту."""
+        for code in ("de", "fr", "gb", "tr"):
+            result = run_query(magic, query_for(code))
+            card = render_result(result, recommendations=build_recommendations(magic, result.query))
+
+            for donor in magic.donors:
+                assert donor.domain not in card, f"домен {donor.domain} потрапив у відповідь"
+
+    async def test_у_картці_немає_списку_сайтів(self, magic):
+        card = render_result(run_query(magic, DonorQuery(section_key="magic")))
+        # Зони бути можуть, а от конкретні домени — ні.
+        assert "de1" not in card
+        assert "glob" not in card
+
+    async def test_розподіл_показує_лише_групи(self, magic):
+        result = run_query(magic, DonorQuery(section_key="magic"))
+        text = render_breakdown("Розподіл по зонах", result.zone_breakdown)
+
+        for donor in magic.donors:
+            assert donor.domain not in text
+
+
+class TestНедоступнаБаза:
+    def test_повідомлення_пояснює_причину(self):
+        from app.data.models import Dataset
+
+        broken = Dataset(
+            section_key="magic",
+            title="Меджик",
+            sheet_name="Меджик",
+            donors=(),
+            loaded_at=0.0,
+            available=False,
+            error="Google не дав доступ до таблиці",
+        )
+        card = render_unavailable(run_query(broken, DonorQuery(section_key="magic")))
+
+        assert "тимчасово недоступна" in card
+        assert "Google не дав доступ" in card
+
+    async def test_render_result_сам_обирає_потрібний_вигляд(self, repository):
+        from app.data.models import Dataset
+
+        broken = Dataset(
+            section_key="magic",
+            title="Меджик",
+            sheet_name="Меджик",
+            donors=(),
+            loaded_at=0.0,
+            available=False,
+            error="збій",
+        )
+        card = render_result(run_query(broken, DonorQuery(section_key="magic")))
+        assert "недоступна" in card
+
+
+class TestРозподіли:
+    async def test_розподіл_по_країнах(self, magic):
+        result = run_query(magic, DonorQuery(section_key="magic"))
+        text = render_breakdown("Розподіл по країнах", result.country_breakdown)
+
+        assert "Німеччина" in text
+        assert "Глобальні зони" in text
+
+    def test_порожній_розподіл(self):
+        assert "немає" in render_breakdown("Розподіл", ())
+
+
+class TestКомбінованийЗапит:
+    async def test_мова_і_країна_в_описі(self, magic):
+        query = DonorQuery(
+            section_key="magic",
+            country=country_by_code("de"),
+            language=language_by_code("de"),
+        )
+        card = render_result(run_query(magic, query))
+
+        assert "Німеччина" in card
+        assert "мова німецька" in card
+        assert LANGUAGE_MARK not in card, "користувач сам звузив — додаток зайвий"

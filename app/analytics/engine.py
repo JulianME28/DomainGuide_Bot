@@ -111,6 +111,9 @@ class LanguageAddendum:
     zone_label: str
     """Зона (чи зони) ядра: «.de», «.co.uk / .uk»."""
 
+    country_name: str = ""
+    """Назва країни — потрібна для тексту попередження про спільні мови."""
+
     @property
     def needs_warning(self) -> bool:
         """Чи попереджати, що цією мовою пишуть багато країн."""
@@ -237,7 +240,12 @@ def _language_addendum(dataset: Dataset, query: DonorQuery) -> LanguageAddendum 
     if count == 0:
         return None
 
-    return LanguageAddendum(language=language, count=count, zone_label=country.zones_label)
+    return LanguageAddendum(
+        language=language,
+        count=count,
+        zone_label=country.zones_label,
+        country_name=country.name_uk,
+    )
 
 
 # ---------------------------------------------------------------------------

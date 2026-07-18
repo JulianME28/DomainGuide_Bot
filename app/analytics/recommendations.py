@@ -32,6 +32,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass
 
 from app.analytics.engine import passes_core, passes_metrics
@@ -115,6 +116,47 @@ def _count(dataset: Dataset, query: DonorQuery) -> int:
     return sum(1 for donor in dataset.donors if passes_core(donor, query))
 
 
+def _zone_counts(dataset: Dataset, query: DonorQuery) -> Counter[str]:
+    """Скільки донорів у кожній доменній зоні — за один прохід по базі.
+
+    Навіщо саме так. Суміжних країн буває три десятки, а в базі — 29 000
+    рядків. Якщо рахувати кожну країну окремим проходом, вийде під мільйон
+    зайвих перевірок, і бот на секунду «задумається» перед відповіддю.
+    Один прохід дає ті самі числа миттєво.
+
+    Фільтри мови й метрик враховуються, зона — ні: саме вона тут змінна.
+    """
+    languages = query.core_languages
+    return Counter(
+        donor.zone
+        for donor in dataset.donors
+        if donor.zone
+        and (not languages or donor.language in languages)
+        and passes_metrics(donor, query)
+    )
+
+
+def _country_suggestions(
+    candidates: tuple, counts: Counter[str], query: DonorQuery
+) -> tuple[Suggestion, ...]:
+    """Перетворює список країн-кандидатів на підказки з кількостями."""
+    suggestions: list[Suggestion] = []
+
+    for country in candidates:
+        count = sum(counts.get(zone, 0) for zone in country.zones)
+        if count:
+            suggestions.append(
+                Suggestion(
+                    label=f"{country.flag} {country.name_uk} ({country.main_zone})",
+                    count=count,
+                    query=query.replace(country=country),
+                )
+            )
+
+    suggestions.sort(key=lambda s: s.count, reverse=True)
+    return tuple(suggestions[:MAX_SUGGESTIONS])
+
+
 # ---------------------------------------------------------------------------
 # 1-2. Суміжні країни
 # ---------------------------------------------------------------------------
@@ -126,21 +168,8 @@ def same_language_suggestions(dataset: Dataset, query: DonorQuery) -> tuple[Sugg
     if country is None:
         return ()
 
-    suggestions: list[Suggestion] = []
-    for neighbour in countries_with_language(country.primary_language, exclude=country.code):
-        neighbour_query = query.replace(country=neighbour)
-        count = _count(dataset, neighbour_query)
-        if count:
-            suggestions.append(
-                Suggestion(
-                    label=f"{neighbour.flag} {neighbour.name_uk} ({neighbour.main_zone})",
-                    count=count,
-                    query=neighbour_query,
-                )
-            )
-
-    suggestions.sort(key=lambda s: s.count, reverse=True)
-    return tuple(suggestions[:MAX_SUGGESTIONS])
+    candidates = countries_with_language(country.primary_language, exclude=country.code)
+    return _country_suggestions(candidates, _zone_counts(dataset, query), query)
 
 
 def same_region_suggestions(dataset: Dataset, query: DonorQuery) -> tuple[Suggestion, ...]:
@@ -151,24 +180,12 @@ def same_region_suggestions(dataset: Dataset, query: DonorQuery) -> tuple[Sugges
 
     # Країни зі спільною мовою показуються окремим блоком — тут їх не дублюємо.
     already = {c.code for c in countries_with_language(country.primary_language)}
-
-    suggestions: list[Suggestion] = []
-    for neighbour in countries_in_region(country.region, exclude=country.code):
-        if neighbour.code in already:
-            continue
-        neighbour_query = query.replace(country=neighbour)
-        count = _count(dataset, neighbour_query)
-        if count:
-            suggestions.append(
-                Suggestion(
-                    label=f"{neighbour.flag} {neighbour.name_uk} ({neighbour.main_zone})",
-                    count=count,
-                    query=neighbour_query,
-                )
-            )
-
-    suggestions.sort(key=lambda s: s.count, reverse=True)
-    return tuple(suggestions[:MAX_SUGGESTIONS])
+    candidates = tuple(
+        neighbour
+        for neighbour in countries_in_region(country.region, exclude=country.code)
+        if neighbour.code not in already
+    )
+    return _country_suggestions(candidates, _zone_counts(dataset, query), query)
 
 
 # ---------------------------------------------------------------------------
