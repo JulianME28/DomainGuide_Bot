@@ -14,10 +14,24 @@
 
 from __future__ import annotations
 
-from html import escape
+import html
 
 from app.analytics.engine import Aggregate, QueryResult
 from app.analytics.recommendations import Recommendations
+
+
+def escape(text: str) -> str:
+    """Готує текст до вставки в HTML-повідомлення.
+
+    Екрануються лише «<», «>» і «&» — символи, які Telegram сприйняв би як
+    розмітку. Лапки й апострофи лишаються як є: quote=True перетворив би
+    апостроф на «&#x27;», і слова «м'якшими», «пам'яті», «В'єтнам» виглядали
+    б у коді й логах як мотлох. У звичайному тексті екранувати їх нема
+    потреби — вони небезпечні лише всередині атрибутів, а атрибутів у нас
+    немає.
+    """
+    return html.escape(str(text), quote=False)
+
 
 # Значок мовного рядка. Свідомо інший, ніж у решті картки, — щоб мовне
 # число неможливо було переплутати із зоновим навіть побіжним поглядом.

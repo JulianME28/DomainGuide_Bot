@@ -158,6 +158,24 @@ class TestБезпекаКартки:
             assert donor.domain not in text
 
 
+class TestЕкранування:
+    async def test_апострофи_лишаються_апострофами(self, magic):
+        """«м'якшими» не має перетворитися на «м&#x27;якшими»."""
+        result = run_query(magic, query_for("gb"))
+        card = render_result(result, recommendations=build_recommendations(magic, result.query))
+
+        assert "&#x27;" not in card
+        assert "&quot;" not in card
+
+    def test_небезпечні_символи_екрануються(self):
+        """А от «<» і «&» Telegram сприйняв би як розмітку — їх екрануємо."""
+        from app.text.cards import escape
+
+        assert escape("<script>") == "&lt;script&gt;"
+        assert escape("Tom & Jerry") == "Tom &amp; Jerry"
+        assert escape('м\'які лапки "тут"') == 'м\'які лапки "тут"'
+
+
 class TestНедоступнаБаза:
     def test_повідомлення_пояснює_причину(self):
         from app.data.models import Dataset
