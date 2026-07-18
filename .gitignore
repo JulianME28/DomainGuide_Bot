@@ -1,0 +1,40 @@
+# ---- СЕКРЕТИ (найголовніше — ніколи не має потрапити в git) ----
+.env
+*.json
+.venv/
+credentials.json
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# ---- Віртуальні оточення ----
+venv/
+env/
+ENV/
+
+# ---- Інструменти ----
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# ---- IDE / ОС ----
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+desktop.ini
+
+# ---- Логи та тимчасові файли ----
+*.log
+logs/
+tmp/

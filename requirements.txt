@@ -1,0 +1,7 @@
+# Робочі залежності бота.
+# Встановити:  .venv\Scripts\python.exe -m pip install -r requirements.txt
+
+aiogram>=3.15,<4          # фреймворк Telegram-бота (меню, кнопки, FSM)
+gspread>=6.1              # читання Google Sheets
+google-auth>=2.35         # авторизація сервіс-акаунтом (той самий credentials.json)
+python-dotenv>=1.0        # читання налаштувань із файлу .env
