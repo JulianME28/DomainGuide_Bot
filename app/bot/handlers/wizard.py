@@ -19,6 +19,7 @@ from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 
+from app.analytics.query import DIMENSION_ACCUSATIVE, Dimension
 from app.bot.context import BotServices
 from app.bot.execution import safe_edit, show_result
 from app.bot.keyboards import (
@@ -30,7 +31,15 @@ from app.bot.keyboards import (
     wizard_sections,
     wizard_traffic,
 )
-from app.bot.states import Wizard, query_from_state, query_to_state, summary_lines
+from app.bot.states import (
+    FRESH_KEY,
+    Wizard,
+    fresh_from_state,
+    inherited_dimensions,
+    query_from_state,
+    query_to_state,
+    summary_lines,
+)
 from app.data.parsing import parse_number
 from app.dictionary.countries import country_by_code
 from app.dictionary.resolver import find_country_match, resolve_language, scan_entities
@@ -74,14 +83,32 @@ async def _goto_dr(target: CallbackQuery | Message, state: FSMContext) -> None:
     await _show(target, STEP_DR, wizard_dr())
 
 
+async def _mark_fresh(state: FSMContext, dimension: str) -> None:
+    """Позначає вимір як заданий САМЕ ЗАРАЗ.
+
+    Далі резюме за цією позначкою відрізняє щойно обране від того, що
+    лишилося з попереднього запиту.
+    """
+    data = await state.get_data()
+    fresh = set(data.get(FRESH_KEY) or ())
+    fresh.add(dimension)
+    await state.update_data(**{FRESH_KEY: sorted(fresh)})
+
+
 async def _goto_confirm(
     target: CallbackQuery | Message, services: BotServices, state: FSMContext
 ) -> None:
     """Резюме фільтрів перед запуском (ТЗ, розділ 30)."""
     await state.set_state(Wizard.confirm)
-    query = query_from_state(await state.get_data())
-    text = summary_lines(query, services.section_title(query.section_key))
-    await _show(target, text, wizard_confirm())
+
+    data = await state.get_data()
+    query = query_from_state(data)
+    fresh = fresh_from_state(data)
+
+    text = summary_lines(query, services.section_title(query.section_key), fresh)
+    # Кнопки скидання показуємо лише для успадкованих фільтрів: щойно
+    # обране змінюють кнопкою «Назад», а не «Прибрати».
+    await _show(target, text, wizard_confirm(inherited_dimensions(query, fresh)))
 
 
 # ---------------------------------------------------------------------------
@@ -91,9 +118,17 @@ async def _goto_confirm(
 
 @router.callback_query(F.data.startswith("wizard:start"))
 async def start_wizard(callback: CallbackQuery, state: FSMContext) -> None:
-    """Запуск майстра. Якщо базу вже обрано — одразу до країни."""
+    """Запуск майстра. Якщо базу вже обрано — одразу до країни.
+
+    Фільтри з попереднього запиту НЕ стираються (ТЗ, розділ 29 — бот
+    пам'ятає запит до скидання), але всі вони одразу позначаються як
+    успадковані. Тому в резюме буде видно, що прийшло з минулого разу,
+    а що обрано щойно.
+    """
     parts = callback.data.split(":")
     section_key = parts[2] if len(parts) > 2 else None
+
+    await state.update_data(**{FRESH_KEY: []})
 
     if section_key:
         await state.update_data(section_key=section_key)
@@ -121,6 +156,25 @@ async def reset_wizard(callback: CallbackQuery, services: BotServices, state: FS
         main_menu(is_admin=is_admin),
     )
     await callback.answer("Скинуто")
+
+
+@router.callback_query(F.data.startswith("wizard:drop:"))
+async def drop_dimension(callback: CallbackQuery, services: BotServices, state: FSMContext) -> None:
+    """Прибирає ОДИН успадкований фільтр, не чіпаючи решту запиту.
+
+    Це і є «один дотик на скидання»: зайва мова з минулого запиту
+    прибирається однією кнопкою, а обрана щойно країна лишається.
+    """
+    dimension = callback.data.split(":")[2]
+
+    query = query_from_state(await state.get_data()).without(dimension)
+    fresh = fresh_from_state(await state.get_data()) - {dimension}
+
+    await state.update_data(**query_to_state(query, fresh))
+
+    title = DIMENSION_ACCUSATIVE.get(dimension, dimension)
+    await callback.answer(f"Прибрано: {title}")
+    await _goto_confirm(callback, services, state)
 
 
 @router.callback_query(F.data.startswith("wizard:back:"))
@@ -157,7 +211,10 @@ async def pick_country(callback: CallbackQuery, state: FSMContext) -> None:
         return
 
     if choice == "skip":
-        await state.update_data(country_code=None)
+        # «Пропустити» = свідомо без країни. Успадковану теж прибираємо:
+        # інакше вийшло б, що людина пропустила крок, а фільтр лишився.
+        await state.update_data(country_code=None, zones=[])
+        await _mark_fresh(state, Dimension.COUNTRY)
         await _goto_traffic(callback, state)
         return
 
@@ -166,7 +223,8 @@ async def pick_country(callback: CallbackQuery, state: FSMContext) -> None:
         await callback.answer("Невідома країна", show_alert=True)
         return
 
-    await state.update_data(country_code=country.code)
+    await state.update_data(country_code=country.code, zones=[])
+    await _mark_fresh(state, Dimension.COUNTRY)
     await _goto_traffic(callback, state)
 
 
@@ -179,6 +237,7 @@ async def type_country(message: Message, state: FSMContext) -> None:
     entities = scan_entities(text)
     if entities.country is None and entities.language is not None:
         await state.update_data(language_code=entities.language.code)
+        await _mark_fresh(state, Dimension.LANGUAGE)
         await message.answer(
             f"Це мова, а не країна — записав її як фільтр мови "
             f"({entities.language.name_uk}).\n"
@@ -196,7 +255,8 @@ async def type_country(message: Message, state: FSMContext) -> None:
         )
         return
 
-    await state.update_data(country_code=found[0].code)
+    await state.update_data(country_code=found[0].code, zones=[])
+    await _mark_fresh(state, Dimension.COUNTRY)
     await _goto_traffic(message, state)
 
 
@@ -218,7 +278,13 @@ async def pick_traffic(callback: CallbackQuery, state: FSMContext) -> None:
             )
         return
 
-    await state.update_data(traffic_min=None if choice == "any" else float(choice))
+    is_any = choice == "any"
+    await state.update_data(
+        traffic_min=None if is_any else float(choice),
+        # «Не важливо» знімає і верхню межу, якщо вона лишилася з минулого запиту.
+        traffic_max=None,
+    )
+    await _mark_fresh(state, Dimension.TRAFFIC)
     await _goto_dr(callback, state)
 
 
@@ -232,7 +298,8 @@ async def type_traffic(message: Message, state: FSMContext) -> None:
         )
         return
 
-    await state.update_data(traffic_min=value)
+    await state.update_data(traffic_min=value, traffic_max=None)
+    await _mark_fresh(state, Dimension.TRAFFIC)
     await _goto_dr(message, state)
 
 
@@ -254,7 +321,8 @@ async def pick_dr(callback: CallbackQuery, services: BotServices, state: FSMCont
             )
         return
 
-    await state.update_data(dr_min=None if choice == "any" else float(choice))
+    await state.update_data(dr_min=None if choice == "any" else float(choice), dr_max=None)
+    await _mark_fresh(state, Dimension.DR)
     await _goto_confirm(callback, services, state)
 
 
@@ -268,7 +336,8 @@ async def type_dr(message: Message, services: BotServices, state: FSMContext) ->
         )
         return
 
-    await state.update_data(dr_min=value)
+    await state.update_data(dr_min=value, dr_max=None)
+    await _mark_fresh(state, Dimension.DR)
     await _goto_confirm(message, services, state)
 
 
@@ -301,6 +370,7 @@ async def type_language(message: Message, services: BotServices, state: FSMConte
         return
 
     await state.update_data(language_code=language.code)
+    await _mark_fresh(state, Dimension.LANGUAGE)
     await _goto_confirm(message, services, state)
 
 

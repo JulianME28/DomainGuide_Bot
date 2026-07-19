@@ -34,6 +34,28 @@ class QueryKind(StrEnum):
     METRICS = "metrics"
 
 
+class Dimension(StrEnum):
+    """Виміри запиту — те, що задають, успадковують і скидають ОКРЕМО.
+
+    Потрібні, щоб бот міг сказати про кожен фільтр, звідки той узявся:
+    задали його щойно чи він лишився з попереднього запиту.
+    """
+
+    COUNTRY = "country"
+    LANGUAGE = "language"
+    TRAFFIC = "traffic"
+    DR = "dr"
+
+
+# Назви вимірів у знахідному відмінку — для кнопок «❌ Прибрати мову».
+DIMENSION_ACCUSATIVE: dict[str, str] = {
+    Dimension.COUNTRY: "країну",
+    Dimension.LANGUAGE: "мову",
+    Dimension.TRAFFIC: "трафік",
+    Dimension.DR: "DR",
+}
+
+
 @dataclass(frozen=True, slots=True)
 class DonorQuery:
     """Один запит до бази."""
@@ -77,6 +99,47 @@ class DonorQuery:
     def is_empty(self) -> bool:
         """Запит без жодного фільтра — просто «скільки всього донорів»."""
         return self.kind is QueryKind.METRICS and not self.has_metric_filters
+
+    @property
+    def filled_dimensions(self) -> frozenset[str]:
+        """Виміри, у яких зараз щось задано."""
+        filled: set[str] = set()
+        if self.country is not None:
+            filled.add(Dimension.COUNTRY)
+        if self.language is not None:
+            filled.add(Dimension.LANGUAGE)
+        if self.traffic_min is not None or self.traffic_max is not None:
+            filled.add(Dimension.TRAFFIC)
+        if self.dr_min is not None or self.dr_max is not None:
+            filled.add(Dimension.DR)
+        return frozenset(filled)
+
+    @property
+    def has_language_conflict(self) -> bool:
+        """Чи мова НЕ є основною мовою обраної країни.
+
+        Наприклад: країна Німеччина + мова англійська. Формально це
+        коректний запит — англомовні сайти в зоні .de. Але разом ці два
+        фільтри звужують вибірку значно сильніше, ніж очікує людина, тому
+        про таке поєднання варто попередити.
+        """
+        return bool(
+            self.country is not None
+            and self.language is not None
+            and self.language.code != self.country.primary_language
+        )
+
+    def without(self, dimension: str) -> DonorQuery:
+        """Копія запиту без одного виміру — для кнопок «❌ Прибрати …»."""
+        if dimension == Dimension.COUNTRY:
+            return self.replace(country=None, zones=())
+        if dimension == Dimension.LANGUAGE:
+            return self.replace(language=None)
+        if dimension == Dimension.TRAFFIC:
+            return self.replace(traffic_min=None, traffic_max=None)
+        if dimension == Dimension.DR:
+            return self.replace(dr_min=None, dr_max=None)
+        return self
 
     # -- що саме фільтруємо --------------------------------------------------
 

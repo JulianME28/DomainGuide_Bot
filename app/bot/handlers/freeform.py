@@ -45,7 +45,9 @@ async def handle_free_text(message: Message, services: BotServices, state: FSMCo
         await message.answer(CLARIFICATION_TEXT, reply_markup=back_to_menu())
         return
 
-    await state.update_data(**query_to_state(parsed.query))
+    # Новий вільний запит замінює попередній повністю: свіжим вважається
+    # рівно те, про що сказали в цьому повідомленні.
+    await state.update_data(**query_to_state(parsed.query, parsed.mentioned))
     await show_result(message, services, parsed.query, message.from_user.id)
 
 

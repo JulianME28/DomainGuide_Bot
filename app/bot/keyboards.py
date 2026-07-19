@@ -16,13 +16,19 @@ Telegram обмежує ці дані 64 байтами, тому вони ко�
 
 from __future__ import annotations
 
+from collections.abc import Iterable
+
 from aiogram.types import InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
+from app.analytics.query import DIMENSION_ACCUSATIVE, Dimension
 from app.dictionary.countries import country_by_code
 
 # Країни, які виносимо на кнопки. Решта — через «Ввести вручну».
 POPULAR_COUNTRIES = ("gb", "us", "de", "fr", "es", "it", "ca", "au", "pl", "nl", "br", "tr")
+
+# Порядок кнопок «❌ Прибрати …» — сталий, щоб вони не стрибали між показами.
+DROP_ORDER = (Dimension.COUNTRY, Dimension.LANGUAGE, Dimension.TRAFFIC, Dimension.DR)
 
 # Швидкі варіанти для метрик у майстрі.
 TRAFFIC_OPTIONS = (1, 10, 50, 100, 500)
@@ -149,14 +155,29 @@ def wizard_dr() -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
-def wizard_confirm() -> InlineKeyboardMarkup:
-    """Крок 5: резюме перед запуском (ТЗ, розділ 30)."""
+def wizard_confirm(droppable: Iterable[str] = ()) -> InlineKeyboardMarkup:
+    """Крок 5: резюме перед запуском (ТЗ, розділ 30).
+
+    droppable — виміри, які лишилися з попереднього запиту. Для кожного
+    з'являється своя кнопка «❌ Прибрати …», щоб зайвий фільтр знімався
+    одним дотиком, а не через повне скидання всього запиту.
+    """
     builder = InlineKeyboardBuilder()
     builder.button(text="▶️ Запустити перевірку", callback_data="wizard:run")
+
+    drop_buttons = 0
+    for dimension in DROP_ORDER:
+        if dimension in droppable:
+            title = DIMENSION_ACCUSATIVE[dimension]
+            builder.button(text=f"❌ Прибрати {title}", callback_data=f"wizard:drop:{dimension}")
+            drop_buttons += 1
+
     builder.button(text="🗣 Додати мову", callback_data="wizard:addlang")
     builder.button(text="⬅️ Назад", callback_data="wizard:back:dr")
-    builder.button(text="🔄 Скинути", callback_data="wizard:reset")
-    builder.adjust(1, 1, 2)
+    builder.button(text="🔄 Скинути все", callback_data="wizard:reset")
+
+    # Кнопки скидання йдуть по одній у рядок — так їх важче натиснути випадково.
+    builder.adjust(1, *([1] * drop_buttons), 1, 2)
     return builder.as_markup()
 
 

@@ -13,7 +13,7 @@ from typing import Any
 
 from aiogram.fsm.state import State, StatesGroup
 
-from app.analytics.query import DonorQuery
+from app.analytics.query import Dimension, DonorQuery
 from app.dictionary.countries import country_by_code
 from app.dictionary.languages import language_by_code
 
@@ -50,9 +50,23 @@ class Ask(StatesGroup):
 # ---------------------------------------------------------------------------
 
 
-def query_to_state(query: DonorQuery) -> dict[str, Any]:
-    """Розкладає запит на прості значення для збереження."""
+FRESH_KEY = "fresh_dimensions"
+"""Ключ у пам'яті стану: які виміри задані САМЕ ЗАРАЗ.
+
+Усе інше, що має значення, вважається успадкованим з попереднього запиту
+і позначається в резюме. Зберігається списком, бо в пам'яті стану можна
+тримати лише прості типи.
+"""
+
+
+def query_to_state(query: DonorQuery, fresh: frozenset[str] | None = None) -> dict[str, Any]:
+    """Розкладає запит на прості значення для збереження.
+
+    fresh — виміри, задані цим-таки повідомленням. Якщо не вказано,
+    вважаємо свіжим усе, що заповнене (звичайний випадок нового запиту).
+    """
     return {
+        FRESH_KEY: sorted(query.filled_dimensions if fresh is None else fresh),
         "section_key": query.section_key,
         "country_code": query.country.code if query.country else None,
         "language_code": query.language.code if query.language else None,
@@ -81,10 +95,34 @@ def query_from_state(data: dict[str, Any], *, default_section: str = "magic") ->
     )
 
 
-def summary_lines(query: DonorQuery, section_title: str) -> str:
-    """Резюме фільтрів перед запуском (ТЗ, розділ 30)."""
-    country = query.country.name_uk if query.country else "не обрано"
-    language = query.language.name_uk if query.language else "не обрано"
+INHERITED_MARK = "(з попереднього запиту)"
+
+
+def fresh_from_state(data: dict[str, Any]) -> frozenset[str]:
+    """Виміри, задані САМЕ ЗАРАЗ, а не успадковані з попереднього запиту."""
+    return frozenset(data.get(FRESH_KEY) or ())
+
+
+def inherited_dimensions(query: DonorQuery, fresh: frozenset[str]) -> frozenset[str]:
+    """Виміри, які щось містять, але задані НЕ в поточному кроці."""
+    return query.filled_dimensions - fresh
+
+
+def summary_lines(
+    query: DonorQuery,
+    section_title: str,
+    fresh: frozenset[str] = frozenset(),
+) -> str:
+    """Резюме фільтрів перед запуском (ТЗ, розділ 30).
+
+    Кожен фільтр, який лишився з попереднього запиту, підписаний
+    «(з попереднього запиту)». Без цього підпису успадкування невидиме:
+    людина бачить фільтр, якого не задавала, і мовчки отримує не ті числа.
+    """
+    inherited = inherited_dimensions(query, fresh)
+
+    def mark(dimension: str) -> str:
+        return f" <i>{INHERITED_MARK}</i>" if dimension in inherited else ""
 
     def limit(minimum: float | None, maximum: float | None) -> str:
         if minimum is None and maximum is None:
@@ -95,13 +133,56 @@ def summary_lines(query: DonorQuery, section_title: str) -> str:
             return f"до {_clean(maximum)}"
         return f"від {_clean(minimum)} до {_clean(maximum)}"
 
+    country = query.country.name_uk if query.country else "не обрано"
+    language = query.language.name_uk if query.language else "не обрано"
+
+    lines = [
+        "<b>Перевірте параметри запиту:</b>",
+        "",
+        f"🗂 <b>База:</b> {section_title}",
+        f"🌍 <b>Країна:</b> {country}{mark(Dimension.COUNTRY)}",
+        f"📊 <b>Трафік:</b> {limit(query.traffic_min, query.traffic_max)}{mark(Dimension.TRAFFIC)}",
+        f"📈 <b>DR:</b> {limit(query.dr_min, query.dr_max)}{mark(Dimension.DR)}",
+        f"🗣 <b>Мова:</b> {language}{mark(Dimension.LANGUAGE)}",
+    ]
+
+    if inherited:
+        lines.append("")
+        lines.append(
+            "<i>Підписані фільтри лишилися з попереднього запиту. "
+            "Прибрати кожен окремо можна кнопками нижче.</i>"
+        )
+
+    conflict = conflict_warning(query)
+    if conflict:
+        lines.append("")
+        lines.append(conflict)
+
+    return "\n".join(lines)
+
+
+def conflict_warning(query: DonorQuery) -> str:
+    """Попередження, коли країна й мова разом сильно звужують вибірку.
+
+    Приклад: країна Німеччина + мова англійська. Запит коректний, але
+    рахує лише англомовні сайти в зоні .de — а людина, побачивши
+    «Німеччина», зазвичай чекає геть іншого числа.
+    """
+    if not query.has_language_conflict:
+        return ""
+
+    country = query.country
+    language = query.language
+    main_language = country.language
+
     return (
-        "<b>Перевірте параметри запиту:</b>\n\n"
-        f"🗂 <b>База:</b> {section_title}\n"
-        f"🌍 <b>Країна:</b> {country}\n"
-        f"📊 <b>Трафік:</b> {limit(query.traffic_min, query.traffic_max)}\n"
-        f"📈 <b>DR:</b> {limit(query.dr_min, query.dr_max)}\n"
-        f"🗣 <b>Мова:</b> {language}"
+        f"⚠️ <b>Увага: країна і мова разом сильно звужують вибірку.</b>\n"
+        f"Основна мова країни {country.name_uk} — "
+        f"{main_language.name_uk if main_language else 'інша'}, "
+        f"а у фільтрі стоїть {language.name_uk}. "
+        f"Буде враховано лише донорів мовою {language.name_uk} "
+        f"у зоні {country.zones_label}.\n"
+        f"Якщо це не те, що потрібно, приберіть мову кнопкою нижче."
     )
 
 

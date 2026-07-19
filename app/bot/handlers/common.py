@@ -12,7 +12,7 @@ from aiogram.types import CallbackQuery, Message
 from app.bot.context import BotServices
 from app.bot.execution import safe_edit
 from app.bot.keyboards import back_to_menu, main_menu
-from app.bot.states import query_from_state, summary_lines
+from app.bot.states import fresh_from_state, query_from_state, summary_lines
 
 router = Router(name="common")
 
@@ -93,7 +93,7 @@ async def cmd_filters(message: Message, services: BotServices, state: FSMContext
 
     query = query_from_state(data)
     await message.answer(
-        summary_lines(query, services.section_title(query.section_key)),
+        summary_lines(query, services.section_title(query.section_key), fresh_from_state(data)),
         reply_markup=back_to_menu(),
     )
 

@@ -253,7 +253,7 @@ async def receive_free_text(message: Message, services: BotServices, state: FSMC
         return
 
     await state.set_state(None)
-    await state.update_data(**query_to_state(parsed.query))
+    await state.update_data(**query_to_state(parsed.query, parsed.mentioned))
     await show_result(message, services, parsed.query, message.from_user.id)
 
 
@@ -331,15 +331,21 @@ async def show_nearby(callback: CallbackQuery, services: BotServices, state: FSM
 
 @router.callback_query(F.data == "res:filter")
 async def add_filter(callback: CallbackQuery, state: FSMContext) -> None:
-    """«Додати фільтр» — веде в майстер, зберігаючи вже обране."""
+    """«Додати фільтр» — веде в майстер, зберігаючи вже обране.
+
+    Усе, що вже було в запиті, одразу позначається як успадковане: далі
+    в резюме буде видно, що прийшло з попереднього запиту, а що додали
+    щойно.
+    """
     from app.bot.keyboards import wizard_traffic
-    from app.bot.states import Wizard
+    from app.bot.states import FRESH_KEY, Wizard
 
     query = await _current_query(state)
     if query is None:
         await callback.answer("Спочатку зробіть запит", show_alert=True)
         return
 
+    await state.update_data(**{FRESH_KEY: []})
     await state.set_state(Wizard.traffic)
     await safe_edit(
         callback,
