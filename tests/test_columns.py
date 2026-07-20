@@ -46,7 +46,7 @@ class TestБойовийКонфіг:
         assert mordy.reads_data
         assert set(mordy.columns) == {"domain", "language", "dr", "traffic", "outlinks", "spam"}
         assert mordy.columns["outlinks"] == "Вихідні"
-        assert mordy.columns["spam"] == "Заспамлені"
+        assert mordy.columns["spam"] == "Заспамленість"
 
     def test_сабміти_це_заглушка(self, columns_config):
         submits = columns_config.section("submits")
