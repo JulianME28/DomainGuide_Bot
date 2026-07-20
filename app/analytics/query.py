@@ -46,6 +46,12 @@ class Dimension(StrEnum):
     TRAFFIC = "traffic"
     DR = "dr"
 
+    # Виміри, для яких у таблиці ще немає колонок. Розбір тексту вже вміє
+    # їх упізнавати, щоб фрази на кшталт «будь-які вихідні лінки» не
+    # заважали сусіднім фільтрам. У запит вони поки не потрапляють.
+    OUTLINKS = "outlinks"
+    SPAM = "spam"
+
 
 # Назви вимірів у знахідному відмінку — для кнопок «❌ Прибрати мову».
 DIMENSION_ACCUSATIVE: dict[str, str] = {
@@ -53,6 +59,8 @@ DIMENSION_ACCUSATIVE: dict[str, str] = {
     Dimension.LANGUAGE: "мову",
     Dimension.TRAFFIC: "трафік",
     Dimension.DR: "DR",
+    Dimension.OUTLINKS: "вихідні лінки",
+    Dimension.SPAM: "заспамленість",
 }
 
 
