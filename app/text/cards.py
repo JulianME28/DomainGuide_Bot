@@ -63,8 +63,23 @@ def number(value: float | None) -> str:
     return f"{rounded:,}".replace(",", " ")
 
 
-def _metrics_block(core: Aggregate) -> list[str]:
-    """Рядки з середніми показниками."""
+def percent(value: float | None) -> str:
+    """Відсоток для людини: 62.5 → «63%», None → «—».
+
+    Округлення half-up (а не банкове, як у round): 62.5 стає 63, як і
+    очікує людина. Стандартний round дав би 62.
+    """
+    if value is None:
+        return "—"
+    return f"{int(value + 0.5)}%"
+
+
+def _metrics_block(core: Aggregate, *, tracks_spam: bool = False) -> list[str]:
+    """Рядки з середніми показниками.
+
+    Для «Морд» (tracks_spam=True) додаються вихідні лінки й заспамленість —
+    у тому самому форматі, що DR і трафік. Для «Меджика» блок незмінний.
+    """
     lines = [
         f"📊 <b>Середній DR:</b> {number(core.avg_dr)}",
         f"📈 <b>Середній трафік:</b> {number(core.avg_traffic)}",
@@ -72,6 +87,12 @@ def _metrics_block(core: Aggregate) -> list[str]:
 
     if core.avg_dr is None and core.avg_traffic is None:
         lines.append("<i>У цій групі не заповнені ні DR, ні трафік.</i>")
+
+    if tracks_spam:
+        lines.append(f"🔗 <b>Середня к-сть вихідних лінків:</b> {number(core.avg_outlinks)}")
+        lines.append(f"🧪 <b>Середня заспамленість:</b> {percent(core.avg_spam_percent)}")
+        if core.avg_spam_percent is None:
+            lines.append("<i>Заспамленість не порахувати: у цих донорів немає вихідних лінків.</i>")
 
     return lines
 
@@ -104,7 +125,7 @@ def render_result(result: QueryResult, *, recommendations: Recommendations | Non
             f"від {core.min_estimate} до {core.count}"
         )
         lines.append("")
-        lines.extend(_metrics_block(core))
+        lines.extend(_metrics_block(core, tracks_spam=result.tracks_spam))
     else:
         lines.append("")
         lines.append("За цими параметрами донорів не знайдено.")

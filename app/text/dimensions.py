@@ -120,18 +120,24 @@ SPECS: tuple[DimensionSpec, ...] = (
         stems=("dr", "др", "рейтинг домену"),
         numeric=True,
     ),
-    # --- поки без колонок у таблиці, але механізм на них уже поширюється ---
+    # --- аналіз заспамленості: підключений для «Морд» ---
     DimensionSpec(
         Dimension.OUTLINKS,
-        stems=("вихідних лінк", "вихідні лінк", "вихідними лінк", "вихідних посилан", "outlink"),
+        stems=(
+            "вихідних лінк",
+            "вихідні лінк",
+            "вихідними лінк",
+            "вихідних посилан",
+            "вихідні посилан",
+            "вихідних",
+            "outlink",
+        ),
         numeric=True,
-        active=False,
     ),
     DimensionSpec(
         Dimension.SPAM,
         stems=("заспамлен", "спамн", "спам"),
         numeric=True,
-        active=False,
     ),
 )
 

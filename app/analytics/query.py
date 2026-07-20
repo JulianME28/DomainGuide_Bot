@@ -81,6 +81,15 @@ class DonorQuery:
     traffic_min: float | None = None
     traffic_max: float | None = None
 
+    # Аналіз заспамленості — лише для «Морд».
+    outlinks_min: float | None = None
+    outlinks_max: float | None = None
+    """Фільтр по кількості вихідних лінків (штуки)."""
+
+    spam_min: float | None = None
+    spam_max: float | None = None
+    """Фільтр по заспамленості у ВІДСОТКАХ (0–100)."""
+
     # -- вид запиту ----------------------------------------------------------
 
     @property
@@ -100,7 +109,16 @@ class DonorQuery:
     def has_metric_filters(self) -> bool:
         return any(
             value is not None
-            for value in (self.dr_min, self.dr_max, self.traffic_min, self.traffic_max)
+            for value in (
+                self.dr_min,
+                self.dr_max,
+                self.traffic_min,
+                self.traffic_max,
+                self.outlinks_min,
+                self.outlinks_max,
+                self.spam_min,
+                self.spam_max,
+            )
         )
 
     @property
@@ -120,6 +138,10 @@ class DonorQuery:
             filled.add(Dimension.TRAFFIC)
         if self.dr_min is not None or self.dr_max is not None:
             filled.add(Dimension.DR)
+        if self.outlinks_min is not None or self.outlinks_max is not None:
+            filled.add(Dimension.OUTLINKS)
+        if self.spam_min is not None or self.spam_max is not None:
+            filled.add(Dimension.SPAM)
         return frozenset(filled)
 
     @property
@@ -147,6 +169,10 @@ class DonorQuery:
             return self.replace(traffic_min=None, traffic_max=None)
         if dimension == Dimension.DR:
             return self.replace(dr_min=None, dr_max=None)
+        if dimension == Dimension.OUTLINKS:
+            return self.replace(outlinks_min=None, outlinks_max=None)
+        if dimension == Dimension.SPAM:
+            return self.replace(spam_min=None, spam_max=None)
         return self
 
     # -- що саме фільтруємо --------------------------------------------------
@@ -194,6 +220,14 @@ class DonorQuery:
 
         parts.append(_describe_range("трафік", self.traffic_min, self.traffic_max))
         parts.append(_describe_range("DR", self.dr_min, self.dr_max))
+
+        # Вихідні лінки й заспамленість згадуємо лише коли їх реально
+        # фільтрують — інакше вони засмічували б опис запитів до «Меджика»,
+        # де таких колонок немає.
+        if self.outlinks_min is not None or self.outlinks_max is not None:
+            parts.append(_describe_range("вихідних лінків", self.outlinks_min, self.outlinks_max))
+        if self.spam_min is not None or self.spam_max is not None:
+            parts.append(_describe_range("заспамленість %", self.spam_min, self.spam_max))
 
         return ", ".join(part for part in parts if part) or "без фільтрів"
 

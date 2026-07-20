@@ -22,8 +22,11 @@ DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config" / "columns.toml"
 
 # Ролі колонок, без яких база не працює.
 REQUIRED_ROLES = ("domain", "language", "dr", "traffic")
-# Ролі, які можуть з'явитися пізніше (аналіз заспамленості для «Морд»).
-OPTIONAL_ROLES = ("outlinks",)
+# Ролі аналізу заспамленості («Морди»). Необов'язкові: якщо аркуш їх не має,
+# база все одно працює, просто без цих показників.
+#   outlinks — кількість вихідних лінків
+#   spam     — скільки з них заспамлені (заспамленість = spam / outlinks × 100%)
+OPTIONAL_ROLES = ("outlinks", "spam")
 KNOWN_ROLES = frozenset(REQUIRED_ROLES + OPTIONAL_ROLES)
 
 
@@ -60,8 +63,17 @@ class SectionConfig:
 
     @property
     def has_outlinks(self) -> bool:
-        """Чи підключена колонка вихідних лінків (аналіз заспамленості)."""
+        """Чи підключена колонка вихідних лінків."""
         return "outlinks" in self.columns
+
+    @property
+    def tracks_spam(self) -> bool:
+        """Чи аркуш дає повний аналіз заспамленості.
+
+        Потрібні обидві колонки: вихідні лінки й скільки з них заспамлені —
+        інакше відсоток заспамленості порахувати нема з чого.
+        """
+        return "outlinks" in self.columns and "spam" in self.columns
 
 
 @dataclass(frozen=True, slots=True)

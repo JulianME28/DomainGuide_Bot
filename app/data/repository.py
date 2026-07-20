@@ -62,6 +62,10 @@ def build_donors(rows: list[dict[str, str]]) -> tuple[tuple[Donor, ...], int]:
                 language=normalize_language(row.get("language", "")),
                 dr=parse_number(row.get("dr")),
                 traffic=parse_number(row.get("traffic")),
+                # Ці ключі є лише в «Мордах». Для «Меджика» їх немає →
+                # parse_number(None) → None, і донор просто без цих даних.
+                outlinks=parse_number(row.get("outlinks")),
+                spammed=parse_number(row.get("spam")),
             )
         )
 
@@ -231,4 +235,5 @@ class DonorRepository:
             available=True,
             rows_read=len(rows),
             rows_skipped=skipped,
+            tracks_spam=section.tracks_spam,
         )

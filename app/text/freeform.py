@@ -121,6 +121,8 @@ def parse_free_text(text: str, *, default_section: str = "magic") -> ParsedQuery
     language = None if cancelled_dimension(Dimension.LANGUAGE) else entities.language
     dr_min, dr_max = limits(Dimension.DR)
     traffic_min, traffic_max = limits(Dimension.TRAFFIC)
+    outlinks_min, outlinks_max = limits(Dimension.OUTLINKS)
+    spam_min, spam_max = limits(Dimension.SPAM)
 
     query = DonorQuery(
         section_key=section,
@@ -133,6 +135,10 @@ def parse_free_text(text: str, *, default_section: str = "magic") -> ParsedQuery
         dr_max=dr_max,
         traffic_min=traffic_min,
         traffic_max=traffic_max,
+        outlinks_min=outlinks_min,
+        outlinks_max=outlinks_max,
+        spam_min=spam_min,
+        spam_max=spam_max,
     )
 
     # Про що саме сказали в цьому повідомленні — задали або зняли.

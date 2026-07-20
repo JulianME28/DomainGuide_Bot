@@ -34,6 +34,13 @@ class Donor:
     traffic: float | None
     """Трафік. Логіка та сама, що й у DR."""
 
+    outlinks: float | None = None
+    """Кількість вихідних лінків (лише «Морди»). None — колонки немає або
+    значення порожнє. 0 — це валідне значення «вихідних немає»."""
+
+    spammed: float | None = None
+    """Скільки вихідних лінків заспамлені (лише «Морди»). Завжди ≤ outlinks."""
+
     @property
     def has_zone(self) -> bool:
         return bool(self.zone)
@@ -41,6 +48,22 @@ class Donor:
     @property
     def has_language(self) -> bool:
         return bool(self.language)
+
+    @property
+    def spam_percent(self) -> float | None:
+        """Заспамленість у відсотках: spammed / outlinks × 100.
+
+        Абсолютне число заспамлених без бази безглузде (10 заспамлених — це
+        багато чи мало?), тому працюємо з відсотком.
+
+        None, якщо порахувати неможливо:
+          * вихідних лінків 0 — ділити на нуль не можна, відсоток невизначений;
+          * якоїсь із колонок немає або значення порожнє.
+        Такий донор рахується в загальній кількості, але в середню
+        заспамленість не входить і у фільтр по заспамленості не потрапляє."""
+        if self.outlinks is None or self.spammed is None or self.outlinks <= 0:
+            return None
+        return self.spammed / self.outlinks * 100
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,6 +98,10 @@ class Dataset:
     rows_skipped: int = 0
     """Скільки рядків не вдалося розібрати — наприклад, порожній домен.
     Це не помилка, а нормальна ситуація для «брудних» даних."""
+
+    tracks_spam: bool = False
+    """Чи має аркуш колонки вихідних лінків і заспамленості («Морди»).
+    Від цього залежить, чи показувати ці показники в картці."""
 
     @property
     def count(self) -> int:

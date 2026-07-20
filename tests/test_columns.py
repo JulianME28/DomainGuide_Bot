@@ -40,19 +40,37 @@ class TestБойовийКонфіг:
             assert "geo" not in section.columns
             assert "country" not in section.columns
 
-    def test_морди_налаштовані_так_само(self, columns_config):
+    def test_морди_мають_аналіз_заспамленості(self, columns_config):
+        """У «Морд» ті самі базові колонки плюс вихідні лінки й заспамленість."""
         mordy = columns_config.section("mordy")
         assert mordy.reads_data
-        assert set(mordy.columns) == {"domain", "language", "dr", "traffic"}
+        assert set(mordy.columns) == {"domain", "language", "dr", "traffic", "outlinks", "spam"}
+        assert mordy.columns["outlinks"] == "Вихідні"
+        assert mordy.columns["spam"] == "Заспамлені"
 
     def test_сабміти_це_заглушка(self, columns_config):
         submits = columns_config.section("submits")
         assert not submits.reads_data, "Сабміти не мають читати дані"
         assert submits.sheet == ""
 
-    def test_вихідних_лінків_поки_немає(self, columns_config):
-        """Колонки заспамленості ще немає — аналіз має бути вимкнений."""
-        assert not columns_config.section("mordy").has_outlinks
+    def test_морди_відстежують_заспамленість(self, columns_config):
+        """Обидві колонки на місці — аналіз заспамленості ввімкнений."""
+        assert columns_config.section("mordy").has_outlinks
+        assert columns_config.section("mordy").tracks_spam
+
+    def test_меджик_без_заспамленості(self, columns_config):
+        """У «Меджика» цих колонок немає й не буде — аналіз вимкнений."""
+        magic = columns_config.section("magic")
+        assert "outlinks" not in magic.columns
+        assert "spam" not in magic.columns
+        assert not magic.has_outlinks
+        assert not magic.tracks_spam
+
+    def test_службова_колонка_raw_не_читається(self, columns_config):
+        """raw — сире службове значення, у карті колонок його бути не має."""
+        for section in columns_config.sections.values():
+            assert "raw" not in section.columns.values()
+        assert "raw" not in columns_config.whitelist
 
     def test_усі_колонки_в_whitelist(self, columns_config):
         for section in columns_config.sections.values():

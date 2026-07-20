@@ -35,7 +35,7 @@ from __future__ import annotations
 from collections import Counter
 from dataclasses import dataclass
 
-from app.analytics.engine import passes_core, passes_metrics
+from app.analytics.engine import normalize_query, passes_core, passes_metrics
 from app.analytics.query import DonorQuery, QueryKind
 from app.data.models import Dataset
 from app.dictionary.countries import countries_in_region, countries_with_language
@@ -326,6 +326,10 @@ def build_recommendations(dataset: Dataset, query: DonorQuery) -> Recommendation
     """
     if not dataset.available or dataset.is_empty:
         return Recommendations()
+
+    # Та сама нормалізація, що й у run_query: щоб рекомендації рахувалися
+    # по тому самому запиту, що й основний результат.
+    query = normalize_query(dataset, query)
 
     return Recommendations(
         same_language=same_language_suggestions(dataset, query),

@@ -94,17 +94,26 @@ CANCEL_PHRASES: dict[str, tuple[str, ...]] = {
     Dimension.SPAM: ("будь-яка заспамленість", "заспамленість не важлива"),
 }
 
-# Числові фільтри: (текст, вимір, очікуване значення).
+# Числові фільтри: (текст, вимір, очікуване значення). Усі чотири числові
+# виміри — щоб перехрестя покривало й заспамленість нарівні з DR і трафіком.
 METRIC_FILTERS: tuple[tuple[str, str, float], ...] = (
     ("трафік від 50", Dimension.TRAFFIC, 50.0),
-    ("трафік від 1 200", Dimension.TRAFFIC, 1200.0),
     ("др від 20", Dimension.DR, 20.0),
     ("dr від 30", Dimension.DR, 30.0),
+    ("вихідних лінків від 15", Dimension.OUTLINKS, 15.0),
+    ("заспамленість від 40", Dimension.SPAM, 40.0),
 )
+
+_VALUE_FIELD = {
+    Dimension.TRAFFIC: "traffic_min",
+    Dimension.DR: "dr_min",
+    Dimension.OUTLINKS: "outlinks_min",
+    Dimension.SPAM: "spam_min",
+}
 
 
 def value_of(parsed, dimension: str) -> float | None:
-    return parsed.query.traffic_min if dimension == Dimension.TRAFFIC else parsed.query.dr_min
+    return getattr(parsed.query, _VALUE_FIELD[dimension])
 
 
 CROSS_PAIRS = [
@@ -261,18 +270,17 @@ class TestМеханізм:
         dimensions = [spec.dimension for spec in SPECS]
         assert len(dimensions) == len(set(dimensions))
 
-    def test_активні_виміри_це_ті_що_мають_колонки(self):
+    def test_усі_виміри_активні(self):
+        """Після підключення заспамленості вимкнених вимірів не лишилося."""
         assert active_dimensions() == {
             Dimension.COUNTRY,
             Dimension.LANGUAGE,
             Dimension.TRAFFIC,
             Dimension.DR,
+            Dimension.OUTLINKS,
+            Dimension.SPAM,
         }
-
-    def test_майбутні_виміри_описані_але_вимкнені(self):
-        """Вихідні лінки й заспамленість поки без колонок у таблиці."""
-        inactive = {spec.dimension for spec in SPECS if not spec.active}
-        assert inactive == {Dimension.OUTLINKS, Dimension.SPAM}
+        assert all(spec.active for spec in SPECS)
 
     def test_фраза_скасування_прибирається_з_тексту(self):
         """Інакше словник сплутав би «країна» з назвою країни."""
@@ -291,20 +299,17 @@ class TestМеханізм:
         _, remaining = resolve_dimensions(normalize_text("донори по німеччині"))
         assert "німеччині" in remaining
 
-    def test_майбутній_вимір_не_ламає_сусіда(self):
-        """Доказ, що механізм справді поширюється на нові виміри.
-
-        Колонки вихідних лінків ще немає, але фраза про них уже впізнається
-        й прибирається — тому сусідня метрика лишається цілою.
-        """
+    def test_вихідні_лінки_не_ламають_сусіда(self):
+        """Скасування вихідних лінків не чіпає сусідню метрику."""
         parsed = parse("будь-які вихідні лінки трафік від 50")
         assert parsed.query.traffic_min == 50
+        assert Dimension.OUTLINKS in parsed.cancelled
 
-    def test_майбутній_вимір_не_потрапляє_у_фільтри(self):
-        """Розпізнали — але у запит не кладемо, бо колонки немає."""
+    def test_вихідні_лінки_тепер_у_фільтрах(self):
+        """Вимір підключений — фраза скасування потрапляє в mentioned."""
         parsed = parse("будь-які вихідні лінки")
-        assert Dimension.OUTLINKS not in parsed.mentioned
-        assert Dimension.OUTLINKS not in parsed.cancelled
+        assert Dimension.OUTLINKS in parsed.mentioned
+        assert Dimension.OUTLINKS in parsed.cancelled
 
 
 class TestНазвиВимірівУСловах:
