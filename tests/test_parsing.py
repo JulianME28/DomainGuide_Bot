@@ -16,6 +16,7 @@ from app.data.parsing import (
     extract_zone,
     normalize_domain,
     normalize_language,
+    parse_geo,
     parse_number,
 )
 
@@ -107,6 +108,47 @@ class TestNormalizeLanguage:
         """Найпідступніший випадок: на око «German » і «German» однакові."""
         assert normalize_language(f"German{NBSP}") == "german"
         assert normalize_language(f"{NBSP}Spanish{NARROW_NBSP}") == "spanish"
+
+
+class TestParseGeo:
+    """GEO у форматі `(cc, N)`. Не падає ніколи; невідповідне → («», None)."""
+
+    @pytest.mark.parametrize(
+        ("raw", "code", "traffic"),
+        [
+            ("(fr, 0)", "fr", 0.0),
+            ("(us, 16640)", "us", 16640.0),
+            ("(DE, 900)", "de", 900.0),  # код зводиться до нижнього регістру
+            ("( gb , 5 )", "gb", 5.0),  # зайві пробіли
+            ("(vn, 44116)", "vn", 44116.0),
+        ],
+    )
+    def test_валідні_значення(self, raw, code, traffic):
+        assert parse_geo(raw) == (code, traffic)
+
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            "",
+            "   ",
+            None,
+            "fr, 0",  # без дужок
+            "(fra, 100)",  # три літери
+            "(fr)",  # без числа
+            "(1, 2)",  # не літери
+            "(fr, abc)",  # число не число
+            "16, 10",  # це формат службової колонки raw, не GEO
+            "казна-що",
+        ],
+    )
+    def test_невідповідний_формат_це_немає_geo(self, raw):
+        assert parse_geo(raw) == ("", None)
+
+    def test_нуль_це_валідне_значення_а_не_відсутність(self):
+        """(fr, 0) — код Є, трафік 0. «Не рахувати» вирішує вже модель, не парсер."""
+        code, traffic = parse_geo("(fr, 0)")
+        assert code == "fr"
+        assert traffic == 0.0
 
 
 class TestNormalizeDomain:

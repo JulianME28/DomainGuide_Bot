@@ -23,7 +23,13 @@ from typing import Protocol
 
 from app.data.columns import ColumnsConfig, SectionConfig
 from app.data.models import Dataset, Donor
-from app.data.parsing import extract_zone, normalize_domain, normalize_language, parse_number
+from app.data.parsing import (
+    extract_zone,
+    normalize_domain,
+    normalize_language,
+    parse_geo,
+    parse_number,
+)
 from app.logging_setup import get_logger
 
 logger = get_logger(__name__)
@@ -56,6 +62,7 @@ def build_donors(rows: list[dict[str, str]]) -> tuple[tuple[Donor, ...], int]:
                 skipped += 1
             continue
 
+        geo_code, geo_traffic = parse_geo(row.get("geo"))
         donors.append(
             Donor(
                 domain=domain,
@@ -67,6 +74,9 @@ def build_donors(rows: list[dict[str, str]]) -> tuple[tuple[Donor, ...], int]:
                 # parse_number(None) → None, і донор просто без цих даних.
                 outlinks=parse_number(row.get("outlinks")),
                 spammed=parse_number(row.get("spam")),
+                # GEO — навпаки, лише в «Меджику». Формат «(cc, N)».
+                geo_code=geo_code,
+                geo_traffic=geo_traffic,
             )
         )
 
@@ -254,4 +264,5 @@ class DonorRepository:
             rows_read=len(rows),
             rows_skipped=skipped,
             tracks_spam=section.tracks_spam,
+            tracks_geo=section.has_geo,
         )

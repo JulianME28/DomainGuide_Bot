@@ -107,6 +107,19 @@ def _metrics_block(core: Aggregate, *, tracks_spam: bool = False) -> list[str]:
     return lines
 
 
+def _found_count(result: QueryResult) -> str:
+    """Рядок «Знайдено донорів». Для запиту про країну — з розкладом складових:
+    «5 (.fr 3 | мова 0 | GEO 2)». GEO-складову показуємо лише коли база її має."""
+    split = result.split
+    if split is None:
+        return str(result.core.count)
+
+    parts = [f"{escape(split.main_zone)} {split.zone}", f"мова {split.language}"]
+    if split.show_geo:
+        parts.append(f"GEO {split.geo}")
+    return f"{split.total} ({' | '.join(parts)})"
+
+
 def render_result(result: QueryResult, *, recommendations: Recommendations | None = None) -> str:
     """Головна картка результату.
 
@@ -133,7 +146,7 @@ def render_result(result: QueryResult, *, recommendations: Recommendations | Non
         lines.append(_stale_note(result.as_of))
 
     lines.append("")
-    lines.append(f"✅ <b>Знайдено донорів:</b> {core.count}")
+    lines.append(f"✅ <b>Знайдено донорів:</b> {_found_count(result)}")
 
     if core.count:
         lines.append(
@@ -199,9 +212,8 @@ def render_language_addendum(result: QueryResult) -> str:
         return ""
 
     line = (
-        f"{LANGUAGE_MARK} <b>+ {addendum.count} {plural_donors(addendum.count)} "
-        f"{escape(addendum.language.instrumental_uk)} мовою поза зоною "
-        f"{escape(addendum.zone_label)}</b>"
+        f"{LANGUAGE_MARK} <b>{escape(addendum.language.instrumental_uk)} "
+        f"на зонах інших країн — {addendum.count}</b>"
     )
 
     if addendum.needs_warning:

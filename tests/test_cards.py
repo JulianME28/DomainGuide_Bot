@@ -78,24 +78,33 @@ class TestПорядокБлоків:
         assert "Середній" not in tail
 
 
-class TestДваЧислаВКартці:
-    async def test_зонове_і_мовне_числа_подані_окремо(self, magic):
+class TestРозкладСкладових:
+    async def test_підсумок_з_розкладом(self, magic):
         card = render_result(run_query(magic, query_for("de")))
+        # Німеччина: 9 (.de 6 | мова 2 | GEO 1)
+        assert "Знайдено донорів:</b> 9 (.de 6 | мова 2 | GEO 1)" in card
 
-        assert "Знайдено донорів:</b> 6" in card
-        assert "+ 4 донори німецькою мовою поза зоною .de" in card
-
-    async def test_сума_ніде_не_зʼявляється(self, magic):
-        """6 і 4 не мають перетворитися на 10 у жодному місці картки."""
+    async def test_додаток_окремим_рядком(self, magic):
         card = render_result(run_query(magic, query_for("de")))
+        assert "на зонах інших країн — 2" in card
 
-        assert "10 донорів" not in card
-        assert "Знайдено донорів:</b> 10" not in card
-
-    async def test_формулювання_каже_поза_зоною(self, magic):
-        """Слова «поза зоною» — головна підказка, що це інша множина."""
+    async def test_додаток_не_входить_у_підсумок(self, magic):
+        """Підсумок 9 і додаток 2 не зливаються в 11 ніде в картці."""
         card = render_result(run_query(magic, query_for("de")))
-        assert "поза зоною" in card
+        assert "11" not in card
+
+    async def test_формулювання_каже_на_зонах_інших_країн(self, magic):
+        card = render_result(run_query(magic, query_for("de")))
+        assert "на зонах інших країн" in card
+
+    async def test_морди_без_geo_складової(self, mordy):
+        """У «Морд» немає GEO — розклад показує лише зону й мову, без «GEO»."""
+        card = render_result(
+            run_query(mordy, DonorQuery(section_key="mordy", country=country_by_code("de")))
+        )
+        found = next(line for line in card.split("\n") if "Знайдено донорів" in line)
+        assert "GEO" not in found
+        assert ".de" in found and "мова" in found
 
     async def test_якщо_додатка_немає_рядка_теж_немає(self, magic):
         card = render_result(run_query(magic, query_for("de", dr_min=100)))

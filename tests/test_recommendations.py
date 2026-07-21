@@ -34,8 +34,10 @@ class TestСуміжніКраїниЗіСпільноюМовою:
         suggestions = {
             s.label.split()[1]: s.count for s in same_language_suggestions(magic, germany())
         }
-        assert suggestions["Австрія"] == 1  # at1.at
-        assert suggestions["Швейцарія"] == 1  # ch1.ch
+        # Трикроково: зона країни + німецька на GLOBAL (glob1, glob2) спільна всім.
+        # Австрія = at1(зона) + glob1,glob2(мова) = 3; Швейцарія = ch1 + 2 = 3.
+        assert suggestions["Австрія"] == 3
+        assert suggestions["Швейцарія"] == 3
 
     async def test_сама_країна_не_пропонується(self, magic):
         labels = " ".join(s.label for s in same_language_suggestions(magic, germany()))
@@ -54,8 +56,10 @@ class TestСуміжніКраїниЗіСпільноюМовою:
         suggestions = same_language_suggestions(magic, germany(dr_min=30))
         counts = {s.label.split()[1]: s.count for s in suggestions}
 
-        assert counts.get("Австрія") == 1  # at1 має DR 35
-        assert "Швейцарія" not in counts  # ch1 має DR 20 — не проходить
+        # DR≥30: Австрія = at1(35, зона) + glob1(45, мова) = 2; glob2(15) відсіявся.
+        # Швейцарія = ch1(20, зона ✗) + glob1(45, мова) = 1.
+        assert counts.get("Австрія") == 2
+        assert counts.get("Швейцарія") == 1
 
 
 class TestПониженняВимог:
@@ -96,9 +100,9 @@ class TestЯдроІЗапас:
         """Ключова умова: тільки так ядро й запас можна складати."""
         group = reserve_group(magic, germany())
         assert group is not None
-        assert group.core_count == 6  # зона .de
-        assert group.reserve_count == 4  # німецькою поза зоною .de
-        assert group.total == 10
+        assert group.core_count == 9  # трикроковий підсумок Німеччини
+        assert group.reserve_count == 2  # німецька поза підсумком (at1, ch1)
+        assert group.total == 11
 
     async def test_запас_це_мова_країни(self, magic):
         group = reserve_group(magic, germany())

@@ -1,28 +1,32 @@
-"""Виконання запиту: фільтри, підрахунки й модель гео.
+"""Виконання запиту: фільтри, підрахунки й модель країни.
 
 ═══════════════════════════════════════════════════════════════════════════
-МОДЕЛЬ ГЕО — найважливіше в проєкті
+МОДЕЛЬ КРАЇНИ — водоспад із трьох кроків
 ═══════════════════════════════════════════════════════════════════════════
 
-У даних НЕМАЄ колонки країни. Її взагалі не існує і не буде. Тому країна
-визначається з двох незалежних сигналів: доменної зони і мови сайту.
+У даних немає готової колонки «країна». Є ТРИ незалежні сигнали, і на запит
+про країну донор зараховується за ПЕРШИМ, що спрацював (водоспад — без
+подвійного рахунку, кожен наступний крок бере лише ще не порахованих):
 
-Питання «скільки донорів по Німеччині» насправді має ДВІ різні відповіді:
+  (а) ЗОНА     — доменна зона ∈ ccTLD країни (Франція → .fr).
+  (б) МОВА     — основна мова країни І зона ∈ GLOBAL_ZONES (нейтральні:
+                 .com .net .org …). Зони ІНШИХ країн (.de, .be) сюди не входять.
+  (в) GEO      — код країни в колонці GEO і трафік N > 0. Зона тут не важлива:
+                 донор із зоною .de і GEO «(fr, 5000)» на запит про Францію
+                 рахується сюди, а на запит про Німеччину — у крок (а).
 
-    6 донорів у зоні .de          ← сайти з німецьким доменом
-    8 донорів німецькою мовою     ← сайти німецькою, будь-де у світі
+Підсумок = (а) + (б) + (в). Один запит — кожен донор рівно в одній групі.
+Похибка й «ядро + запас» рахуються від ПІДСУМКУ, а не від окремої складової.
 
-Це різні множини, і вони перетинаються. Тому бот:
+ОСТАННІЙ РЯДОК картки — окрема пропозиція, у підсумок НЕ входить:
 
-  * бере за ЯДРО доменну зону (.de) — це надійніший сигнал країни;
-  * окремим ОСТАННІМ рядком показує, скільки німецькомовних донорів є
-    ПОЗА зоною .de — і рахує лише тих, кого немає в ядрі;
-  * НІКОЛИ не додає ці два числа одне до одного.
+    💬 французькою на зонах інших країн — N
 
-Чому не сумувати. У прикладі вище 6 + 8 = 14 було б неправдою: 4 донори
-одночасно і в зоні .de, і німецькою мовою — їх порахували б двічі. Тому
-мовний додаток дорівнює 4 (8 німецькомовних мінус 4, що вже в зоні .de),
-і показується він окремим рядком, а не в сумі.
+Це донори мови країни на ccTLD ІНШИХ країн (не своя зона, не нейтральні),
+і лише ті, кого не враховано в підсумку (частина могла зайти через GEO).
+
+GEO є лише в «Меджику». «Морди» колонки GEO не мають — там крок (в) просто
+відсутній (0), підрахунок працює на двох кроках, нічого не обнуляється.
 
 ═══════════════════════════════════════════════════════════════════════════
 БЕЗПЕКА
@@ -116,17 +120,40 @@ class Aggregate:
 
 
 @dataclass(frozen=True, slots=True)
-class LanguageAddendum:
-    """Мовний додаток — той самий останній рядок картки.
+class CountrySplit:
+    """Розклад підсумку країни на три складові водоспаду.
 
-    Читається так: «крім донорів у зоні .de, є ще N донорів німецькою мовою
-    в інших зонах». Із ядром не сумується.
+    total = zone + language + geo. Показується в рядку «Знайдено донорів»:
+    «562 (.fr 159 | мова 331 | GEO 72)».
+    """
+
+    zone: int
+    language: int
+    geo: int
+    main_zone: str
+    """Головна ccTLD країни для підпису зонової складової: «.fr»."""
+
+    show_geo: bool
+    """Чи показувати GEO-складову. False для баз без колонки GEO («Морди»)."""
+
+    @property
+    def total(self) -> int:
+        return self.zone + self.language + self.geo
+
+
+@dataclass(frozen=True, slots=True)
+class LanguageAddendum:
+    """Останній рядок картки — окрема пропозиція, у підсумок НЕ входить.
+
+    Читається так: «мовою країни на ccTLD інших країн є ще N донорів, яких
+    немає в підсумку». Це не «поза зоною» загалом, а саме чужі ccTLD:
+    нейтральні (.com) уже враховані в кроці (б) підсумку, а зона країни — у (а).
     """
 
     language: Language
     count: int
     zone_label: str
-    """Зона (чи зони) ядра: «.de», «.co.uk / .uk»."""
+    """Зона (чи зони) країни: «.de», «.co.uk / .uk». Для контексту."""
 
     country_name: str = ""
     """Назва країни — потрібна для тексту попередження про спільні мови."""
@@ -144,6 +171,9 @@ class QueryResult:
     section_title: str
     query: DonorQuery
     core: Aggregate
+    split: CountrySplit | None = None
+    """Розклад підсумку на зону/мову/GEO — лише для запиту про країну."""
+
     addendum: LanguageAddendum | None = None
     zone_breakdown: tuple[tuple[str, int], ...] = ()
     language_breakdown: tuple[tuple[str, int], ...] = ()
@@ -201,7 +231,11 @@ def passes_metrics(donor: Donor, query: DonorQuery) -> bool:
 
 
 def passes_core(donor: Donor, query: DonorQuery) -> bool:
-    """Чи потрапляє донор у ядро запиту."""
+    """Чи потрапляє донор у ядро запиту (для НЕ-країнних запитів).
+
+    Це проста перевірка «зона + мова + метрики». Запит про КРАЇНУ рахується
+    інакше — трикроковим водоспадом (див. _country_step / classify_country).
+    """
     zones = query.core_zones
     if zones and donor.zone not in zones:
         return False
@@ -219,6 +253,96 @@ def select_core(dataset: Dataset, query: DonorQuery) -> list[Donor]:
     Функція внутрішня: назовні з модуля йдуть тільки числа.
     """
     return [donor for donor in dataset.donors if passes_core(donor, query)]
+
+
+# ---------------------------------------------------------------------------
+# Модель країни: трикроковий водоспад
+# ---------------------------------------------------------------------------
+
+
+def _country_step(donor: Donor, country) -> str | None:
+    """Яким кроком водоспаду донор належить країні: "zone" / "language" / "geo"
+    / None. Метрики тут НЕ перевіряються — це робить той, хто викликає.
+
+    Порядок кроків і є «без подвійного рахунку»: перший, що спрацював, виграє.
+    """
+    if donor.zone in country.zones:
+        return "zone"
+    keys = country.language.data_keys if country.language else frozenset()
+    if donor.language in keys and is_global_zone(donor.zone):
+        return "language"
+    if donor.geo_code == country.code and donor.has_measured_geo:
+        return "geo"
+    return None
+
+
+def classify_country(
+    dataset: Dataset, query: DonorQuery
+) -> tuple[list[Donor], list[Donor], list[Donor], list[Donor]]:
+    """Ділить донорів на групи для запиту про країну — за ОДИН прохід.
+
+    Повертає (зона, мова, geo, додаток). Перші три — це підсумок (кожен
+    донор рівно в одній групі). Четверта — окрема пропозиція «мова на зонах
+    інших країн», яка в підсумок не входить.
+
+    Усі чотири групи відфільтровані метриками (DR/трафік) запиту.
+    """
+    country = query.country
+    zone_d: list[Donor] = []
+    lang_d: list[Donor] = []
+    geo_d: list[Donor] = []
+    addendum_d: list[Donor] = []
+
+    keys = country.language.data_keys if country and country.language else frozenset()
+
+    for donor in dataset.donors:
+        if not passes_metrics(donor, query):
+            continue
+        step = _country_step(donor, country)
+        if step == "zone":
+            zone_d.append(donor)
+        elif step == "language":
+            lang_d.append(donor)
+        elif step == "geo":
+            geo_d.append(donor)
+        elif donor.language in keys:
+            # Не в підсумку. Якщо це мова країни на ccTLD ІНШОЇ країни
+            # (не своя зона — інакше був би крок «zone»; не нейтральна —
+            # інакше крок «language») — це додаток «на зонах інших країн».
+            other = country_by_zone(donor.zone)
+            if other is not None and other.code != country.code:
+                addendum_d.append(donor)
+
+    return zone_d, lang_d, geo_d, addendum_d
+
+
+def passes_result(donor: Donor, query: DonorQuery) -> bool:
+    """Чи входить донор у ПІДСУМОК запиту.
+
+    Для запиту про країну — трикрокова модель; для решти — звичайне ядро.
+    Спільний предикат, щоб рекомендації рахували те саме число, що й картка.
+    """
+    if query.kind is QueryKind.COUNTRY and query.country is not None:
+        return passes_metrics(donor, query) and _country_step(donor, query.country) is not None
+    return passes_core(donor, query)
+
+
+def result_count(dataset: Dataset, query: DonorQuery) -> int:
+    """Скільки донорів у підсумку запиту (з урахуванням моделі країни)."""
+    return sum(1 for donor in dataset.donors if passes_result(donor, query))
+
+
+def _build_addendum(country, addendum_donors: list[Donor]) -> LanguageAddendum | None:
+    """Складає останній рядок «мовою на зонах інших країн» із групи донорів."""
+    language = country.language if country else None
+    if language is None or not addendum_donors:
+        return None
+    return LanguageAddendum(
+        language=language,
+        count=len(addendum_donors),
+        zone_label=country.zones_label,
+        country_name=country.name_uk,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -254,42 +378,6 @@ def aggregate(donors: list[Donor]) -> Aggregate:
         avg_spam_percent=average(spam_values),
         outlinks_sample=len(outlinks_values),
         spam_sample=len(spam_values),
-    )
-
-
-def _language_addendum(dataset: Dataset, query: DonorQuery) -> LanguageAddendum | None:
-    """Рахує мовний додаток для запиту про країну.
-
-    Це і є те саме «без подвійного рахунку»: беремо донорів основною мовою
-    країни й ВИКИДАЄМО тих, хто вже потрапив у ядро за доменною зоною.
-    """
-    country = query.country
-    if country is None:
-        return None
-
-    language = country.language
-    if language is None:
-        return None
-
-    zones = query.core_zones
-    keys = language.data_keys
-
-    count = sum(
-        1
-        for donor in dataset.donors
-        if donor.language in keys  # потрібна мова
-        and donor.zone not in zones  # але НЕ в зоні ядра — без подвійного рахунку
-        and passes_metrics(donor, query)  # ті самі фільтри DR/трафіку
-    )
-
-    if count == 0:
-        return None
-
-    return LanguageAddendum(
-        language=language,
-        count=count,
-        zone_label=country.zones_label,
-        country_name=country.name_uk,
     )
 
 
@@ -380,15 +468,31 @@ def run_query(dataset: Dataset, query: DonorQuery, *, with_breakdowns: bool = Tr
         )
 
     query = normalize_query(dataset, query)
-    core_donors = select_core(dataset, query)
+
+    # Запит про КРАЇНУ рахується трикроковим водоспадом; решта — звичайним
+    # ядром. Мовний додаток і розклад складових — тільки для країни.
+    split: CountrySplit | None = None
+    addendum: LanguageAddendum | None = None
+    if query.kind is QueryKind.COUNTRY and query.country is not None:
+        zone_d, lang_d, geo_d, addendum_d = classify_country(dataset, query)
+        core_donors = zone_d + lang_d + geo_d
+        split = CountrySplit(
+            zone=len(zone_d),
+            language=len(lang_d),
+            geo=len(geo_d),
+            main_zone=query.country.main_zone,
+            show_geo=dataset.tracks_geo,
+        )
+        addendum = _build_addendum(query.country, addendum_d)
+    else:
+        core_donors = select_core(dataset, query)
 
     return QueryResult(
         section_title=dataset.title,
         query=query,
         core=aggregate(core_donors),
-        # Мовний додаток — тільки для запиту про країну. Якщо користувач сам
-        # указав і країну, і мову, додаток не потрібен: він уже все звузив.
-        addendum=(_language_addendum(dataset, query) if query.kind is QueryKind.COUNTRY else None),
+        split=split,
+        addendum=addendum,
         zone_breakdown=zone_breakdown(core_donors) if with_breakdowns else (),
         language_breakdown=language_breakdown(core_donors) if with_breakdowns else (),
         country_breakdown=country_breakdown(core_donors) if with_breakdowns else (),

@@ -32,13 +32,18 @@
 
 from __future__ import annotations
 
-from collections import Counter
 from dataclasses import dataclass
 
-from app.analytics.engine import normalize_query, passes_core, passes_metrics
+from app.analytics.engine import (
+    normalize_query,
+    passes_metrics,
+    passes_result,
+    result_count,
+)
 from app.analytics.query import DonorQuery, QueryKind
 from app.data.models import Dataset
 from app.dictionary.countries import countries_in_region, countries_with_language
+from app.dictionary.zones import is_global_zone
 
 # Наскільки пом'якшуємо вимоги в підказках.
 DR_RELAXATION = 10
@@ -112,38 +117,50 @@ class Recommendations:
 
 
 def _count(dataset: Dataset, query: DonorQuery) -> int:
-    """Скільки донорів проходить запит."""
-    return sum(1 for donor in dataset.donors if passes_core(donor, query))
+    """Скільки донорів у підсумку запиту (трикрокова модель для країни)."""
+    return result_count(dataset, query)
 
 
-def _zone_counts(dataset: Dataset, query: DonorQuery) -> Counter[str]:
-    """Скільки донорів у кожній доменній зоні — за один прохід по базі.
+def _country_totals(dataset: Dataset, query: DonorQuery, countries: tuple) -> dict[str, int]:
+    """Трикроковий підсумок для КОЖНОЇ країни-кандидата — за ОДИН прохід.
 
-    Навіщо саме так. Суміжних країн буває три десятки, а в базі — 29 000
-    рядків. Якщо рахувати кожну країну окремим проходом, вийде під мільйон
-    зайвих перевірок, і бот на секунду «задумається» перед відповіддю.
-    Один прохід дає ті самі числа миттєво.
+    Навіщо саме так. Суміжних країн до п'яти-шести, а в базі ~31 000 рядків.
+    Окремий прохід на кожну країну — це під двісті тисяч зайвих перевірок і
+    відчутна пауза. Один зовнішній прохід по донорах із коротким внутрішнім
+    циклом по кандидатах дає ті самі числа миттєво (як зроблено у 747dfb6).
 
-    Фільтри мови й метрик враховуються, зона — ні: саме вона тут змінна.
+    Метрики (DR/трафік) поточного запиту застосовуються; змінна тут — країна.
     """
-    languages = query.core_languages
-    return Counter(
-        donor.zone
-        for donor in dataset.donors
-        if donor.zone
-        and (not languages or donor.language in languages)
-        and passes_metrics(donor, query)
-    )
+    specs = [
+        (c.code, frozenset(c.zones), c.language.data_keys if c.language else frozenset())
+        for c in countries
+    ]
+    counts = {c.code: 0 for c in countries}
+
+    for donor in dataset.donors:
+        if not passes_metrics(donor, query):
+            continue
+        zone = donor.zone
+        language = donor.language
+        geo_code = donor.geo_code
+        geo_ok = donor.has_measured_geo
+        is_global = is_global_zone(zone)
+        for code, zones, keys in specs:
+            # Той самий водоспад, що й у моделі країни: зона → мова → GEO.
+            if zone in zones or (language in keys and is_global) or (geo_ok and geo_code == code):
+                counts[code] += 1
+
+    return counts
 
 
 def _country_suggestions(
-    candidates: tuple, counts: Counter[str], query: DonorQuery
+    candidates: tuple, counts: dict[str, int], query: DonorQuery
 ) -> tuple[Suggestion, ...]:
     """Перетворює список країн-кандидатів на підказки з кількостями."""
     suggestions: list[Suggestion] = []
 
     for country in candidates:
-        count = sum(counts.get(zone, 0) for zone in country.zones)
+        count = counts.get(country.code, 0)
         if count:
             suggestions.append(
                 Suggestion(
@@ -169,7 +186,7 @@ def same_language_suggestions(dataset: Dataset, query: DonorQuery) -> tuple[Sugg
         return ()
 
     candidates = countries_with_language(country.primary_language, exclude=country.code)
-    return _country_suggestions(candidates, _zone_counts(dataset, query), query)
+    return _country_suggestions(candidates, _country_totals(dataset, query, candidates), query)
 
 
 def same_region_suggestions(dataset: Dataset, query: DonorQuery) -> tuple[Suggestion, ...]:
@@ -185,7 +202,7 @@ def same_region_suggestions(dataset: Dataset, query: DonorQuery) -> tuple[Sugges
         for neighbour in countries_in_region(country.region, exclude=country.code)
         if neighbour.code not in already
     )
-    return _country_suggestions(candidates, _zone_counts(dataset, query), query)
+    return _country_suggestions(candidates, _country_totals(dataset, query, candidates), query)
 
 
 # ---------------------------------------------------------------------------
@@ -246,8 +263,9 @@ def reserve_group(dataset: Dataset, query: DonorQuery) -> ReserveGroup | None:
         return None
 
     # Запам'ятовуємо ядро за номерами рядків — так порівняння точне.
+    # Ядро — це новий трикроковий підсумок (зона + мова + GEO).
     core_indices = {
-        index for index, donor in enumerate(dataset.donors) if passes_core(donor, query)
+        index for index, donor in enumerate(dataset.donors) if passes_result(donor, query)
     }
     if not core_indices:
         return None

@@ -111,8 +111,11 @@ class TestФільтри:
         result = run_query(
             magic, DonorQuery(section_key="magic", country=country_by_code("de"), traffic_min=500)
         )
-        # У зоні .de з трафіком ≥500: de1(4800), de2(1200), de3(500), de4(12000) = 4
-        assert result.core.count == 4
+        # Трикроково з трафіком ≥500:
+        #   зона .de: de1(4800),de2(1200),de3(500),de4(12000) = 4
+        #   мова на GLOBAL: glob1(3000) = 1;  GEO: es1 traffic 320<500 = 0
+        assert result.core.count == 5
+        assert (result.split.zone, result.split.language, result.split.geo) == (4, 1, 0)
 
     async def test_запит_без_фільтрів_це_вся_база(self, magic):
         query = DonorQuery(section_key="magic")

@@ -7,17 +7,19 @@
 ключову логіку. Числа нижче — це «правильні відповіді», на які спираються
 тести, тому міняти рядки треба обережно.
 
-    ЗОНА .de .................. 6 донорів
-    мова German .............. 8 донорів (4 у зоні .de + 4 поза нею)
-    → мовний додаток для Німеччини = 4   (6 і 4 НЕ сумуються!)
+ТРИКРОКОВА МОДЕЛЬ КРАЇНИ (зона → мова-на-GLOBAL → GEO), без подвійного рахунку:
 
-    ЗОНА .fr .................. 3 донори
-    мова French .............. 3 донори (2 у зоні .fr + 1 поза нею)
-    → мовний додаток для Франції = 1, попередження НЕ показується
+    Франція:  зона .fr = 3 | мова French на GLOBAL = 0 | GEO (fr,N>0) = 2  → 5
+              додаток «French на зонах інших країн» = 1 (be1 на .be)
+    Німеччина: зона .de = 6 | мова German на GLOBAL = 2 (glob1,glob2) | GEO (de) = 1 (es1) → 9
+              додаток = 2 (at1 на .at, ch1 на .ch)
+    Британія: зона .co.uk/.uk = 3 | мова English на GLOBAL = 2 (glob3,glob4) | GEO = 0 → 5
+              додаток = 2 (de3 на .de, fr3 на .fr), попередження показується
 
-    ЗОНА .co.uk/.uk ........... 3 донори
-    мова English ............. 7 донорів (3 у зоні + 4 поза нею)
-    → мовний додаток для Британії = 4, попередження показується
+GEO-колонка (формат «(cc, N)») додана лише кільком рядкам:
+    de6 «(fr,5000)» — приклад: .de-зона + GEO(fr) → Німеччина=зона, Франція=GEO
+    cn1 «(fr,3000)» — France→GEO;  vn1 «(fr,0)» — НЕ рахується (N=0)
+    es1 «(de,900)»  — Germany→GEO; de1 «(de,1000)» — зона важливіша за GEO
 
 Також усередині є «брудні» значення: "n/a" у DR, трафік "4 800" і "1,200",
 мова з хвостовим пробілом, рядок без домену і повністю порожній рядок.
@@ -29,18 +31,15 @@ from __future__ import annotations
 EXPECTED_DONORS = 24
 EXPECTED_SKIPPED = 1  # один рядок має дані, але не має домену
 
-# Очікувані числа для перевірок моделі гео.
-GERMANY_ZONE_COUNT = 6
-GERMAN_LANGUAGE_TOTAL = 8
-GERMAN_LANGUAGE_OUTSIDE_ZONE = 4
-
-FRANCE_ZONE_COUNT = 3
-FRENCH_LANGUAGE_TOTAL = 3
-FRENCH_LANGUAGE_OUTSIDE_ZONE = 1
-
-UK_ZONE_COUNT = 3
+# «Сирі» мовні підсумки — для запитів ПРО МОВУ (не про країну).
+GERMAN_LANGUAGE_TOTAL = 8  # усі німецькомовні донори
+FRENCH_LANGUAGE_TOTAL = 3  # fr1, fr2, be1 (fr3 — англійською)
 ENGLISH_LANGUAGE_TOTAL = 7
-ENGLISH_LANGUAGE_OUTSIDE_ZONE = 4
+
+# Трикроковий підсумок країни: (зона, мова, GEO, підсумок, додаток).
+FRANCE_ZONE, FRANCE_LANG, FRANCE_GEO, FRANCE_TOTAL, FRANCE_ADDENDUM = 3, 0, 2, 5, 1
+GERMANY_ZONE, GERMANY_LANG, GERMANY_GEO, GERMANY_TOTAL, GERMANY_ADDENDUM = 6, 2, 1, 9, 2
+UK_ZONE, UK_LANG, UK_GEO, UK_TOTAL, UK_ADDENDUM = 3, 2, 0, 5, 2
 
 
 def magic_rows() -> list[dict[str, str]]:
@@ -50,13 +49,26 @@ def magic_rows() -> list[dict[str, str]]:
     """
     return [
         # --- Німеччина, зона .de (6 донорів) --------------------------------
-        {"domain": "de1.de", "language": "German", "dr": "40", "traffic": "4 800"},
+        # de1: GEO(de) — але зона .de важливіша (крок зони, не GEO)
+        {
+            "domain": "de1.de",
+            "language": "German",
+            "dr": "40",
+            "traffic": "4 800",
+            "geo": "(de, 1000)",
+        },
         {"domain": "de2.de", "language": "German", "dr": "n/a", "traffic": "1,200"},
         {"domain": "de3.de", "language": "English", "dr": "25", "traffic": "500"},
         {"domain": "de4.de", "language": "German", "dr": "55", "traffic": "12K"},
         {"domain": "shop.de5.de", "language": "german", "dr": "10", "traffic": "100"},
-        # турецькомовний сайт у зоні .de — зона й мова це різні речі
-        {"domain": "de6.de", "language": "Turkish", "dr": "30", "traffic": "200"},
+        # de6: .de-зона + GEO(fr) — Німеччина рахує його в зону, Франція в GEO
+        {
+            "domain": "de6.de",
+            "language": "Turkish",
+            "dr": "30",
+            "traffic": "200",
+            "geo": "(fr, 5000)",
+        },
         # --- німецька мова ПОЗА зоною .de (4 донори) ------------------------
         {"domain": "at1.at", "language": "German", "dr": "35", "traffic": "900"},
         {"domain": "ch1.ch", "language": "German", "dr": "20", "traffic": "700"},
@@ -66,7 +78,7 @@ def magic_rows() -> list[dict[str, str]]:
         {"domain": "fr1.fr", "language": "French", "dr": "30", "traffic": "400"},
         {"domain": "fr2.fr", "language": "French", "dr": "22", "traffic": "150"},
         {"domain": "fr3.fr", "language": "English", "dr": "18", "traffic": "90"},
-        # французька мова поза зоною .fr (1 донор)
+        # французька мова поза зоною .fr (1 донор) — додаток «на зонах інших країн»
         {"domain": "be1.be", "language": "French", "dr": "28", "traffic": "300"},
         # --- Британія, зони .co.uk і .uk (3 донори) -------------------------
         {
@@ -82,10 +94,30 @@ def magic_rows() -> list[dict[str, str]]:
         {"domain": "glob4.org", "language": "english", "dr": "5", "traffic": "20"},
         # --- мови, які мають розпізнаватися окремо --------------------------
         {"domain": "tr1.com.tr", "language": "Turkish", "dr": "26", "traffic": "600"},
-        {"domain": "cn1.cn", "language": "Chinese", "dr": "44", "traffic": "7000"},
-        {"domain": "vn1.vn", "language": "Vietnamese", "dr": "19", "traffic": "250"},
-        # --- іспанська: одна в зоні .es, одна в глобальній .online ----------
-        {"domain": "es1.es", "language": "Spanish", "dr": "21", "traffic": "320"},
+        # cn1: GEO(fr) — France→GEO
+        {
+            "domain": "cn1.cn",
+            "language": "Chinese",
+            "dr": "44",
+            "traffic": "7000",
+            "geo": "(fr, 3000)",
+        },
+        # vn1: GEO(fr, 0) — N=0, у GEO-крок НЕ входить
+        {
+            "domain": "vn1.vn",
+            "language": "Vietnamese",
+            "dr": "19",
+            "traffic": "250",
+            "geo": "(fr, 0)",
+        },
+        # --- іспанська: одна в зоні .es (GEO de → Germany→GEO), одна глобальна
+        {
+            "domain": "es1.es",
+            "language": "Spanish",
+            "dr": "21",
+            "traffic": "320",
+            "geo": "(de, 900)",
+        },
         {"domain": "glob5.online", "language": "Spanish", "dr": "8", "traffic": "40"},
         # --- «брудні» рядки -------------------------------------------------
         # має дані, але немає домену → рахується як пропущений

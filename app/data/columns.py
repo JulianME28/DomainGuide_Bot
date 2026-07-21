@@ -22,11 +22,12 @@ DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config" / "columns.toml"
 
 # Ролі колонок, без яких база не працює.
 REQUIRED_ROLES = ("domain", "language", "dr", "traffic")
-# Ролі аналізу заспамленості («Морди»). Необов'язкові: якщо аркуш їх не має,
-# база все одно працює, просто без цих показників.
-#   outlinks — кількість вихідних лінків
+# Необов'язкові ролі: якщо аркуш їх не має, база все одно працює, просто без
+# цих показників.
+#   outlinks — кількість вихідних лінків («Морди»)
 #   spam     — скільки з них заспамлені (заспамленість = spam / outlinks × 100%)
-OPTIONAL_ROLES = ("outlinks", "spam")
+#   geo      — країна походження трафіку у форматі «(cc, N)» («Меджик»)
+OPTIONAL_ROLES = ("outlinks", "spam", "geo")
 KNOWN_ROLES = frozenset(REQUIRED_ROLES + OPTIONAL_ROLES)
 
 
@@ -74,6 +75,11 @@ class SectionConfig:
         інакше відсоток заспамленості порахувати нема з чого.
         """
         return "outlinks" in self.columns and "spam" in self.columns
+
+    @property
+    def has_geo(self) -> bool:
+        """Чи підключена колонка GEO (країна походження трафіку, «Меджик»)."""
+        return "geo" in self.columns
 
 
 @dataclass(frozen=True, slots=True)

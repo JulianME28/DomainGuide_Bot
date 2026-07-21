@@ -41,9 +41,25 @@ class Donor:
     spammed: float | None = None
     """Скільки вихідних лінків заспамлені (лише «Морди»). Завжди ≤ outlinks."""
 
+    geo_code: str = ""
+    """Код країни ПОХОДЖЕННЯ ТРАФІКУ (лише «Меджик», колонка GEO). Малими
+    літерами: "fr", "us". Порожній — GEO немає або формат невідповідний."""
+
+    geo_traffic: float | None = None
+    """Обсяг трафіку з країни geo_code. None — GEO немає. 0 — країна відома,
+    але трафіку не виміряно: такий донор у GEO-крок НЕ рахується (як «n/a»)."""
+
     @property
     def has_zone(self) -> bool:
         return bool(self.zone)
+
+    @property
+    def has_measured_geo(self) -> bool:
+        """Чи є в донора виміряний GEO-трафік (код є і N > 0).
+
+        N = 0 не рахується: країна відома, але обсягу немає — так само, як
+        «n/a» у DR не йде в середнє."""
+        return bool(self.geo_code) and self.geo_traffic is not None and self.geo_traffic > 0
 
     @property
     def has_language(self) -> bool:
@@ -102,6 +118,11 @@ class Dataset:
     tracks_spam: bool = False
     """Чи має аркуш колонки вихідних лінків і заспамленості («Морди»).
     Від цього залежить, чи показувати ці показники в картці."""
+
+    tracks_geo: bool = False
+    """Чи має аркуш колонку GEO («Меджик»). Від цього залежить, чи показувати
+    GEO-складову підрахунку країни. «Морди» GEO не мають — там її просто
+    немає, підрахунок працює на двох кроках (зона + мова)."""
 
     stale: bool = False
     """True, якщо це дані з кешу, які показуємо тому, що онлайн-оновлення

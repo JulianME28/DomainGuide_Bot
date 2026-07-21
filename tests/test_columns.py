@@ -30,14 +30,17 @@ class TestБойовийКонфіг:
         assert magic.columns["dr"] == "DR"
         assert magic.columns["traffic"] == "Traffic"
 
-    def test_колонки_гео_немає(self, columns_config):
-        """Ключова відмінність проєкту: колонки країни в даних не існує.
+    def test_geo_є_в_меджику_а_в_мордах_немає(self, columns_config):
+        """GEO (країна походження трафіку) підключена лише до «Меджика».
 
-        Якщо цей тест колись впаде — значить, у карті колонок з'явилося гео,
-        і модель «зона + мова» треба переглядати свідомо, а не випадково.
+        Це третій сигнал країни (крім зони й мови). «Морди» цієї колонки не
+        мають — там підрахунок країни працює на двох кроках.
         """
+        assert columns_config.section("magic").columns.get("geo") == "GEO"
+        assert columns_config.section("magic").has_geo
+        assert not columns_config.section("mordy").has_geo
+        # Готової колонки «країна» як такої немає — країна виводиться, не читається.
         for section in columns_config.sections.values():
-            assert "geo" not in section.columns
             assert "country" not in section.columns
 
     def test_морди_мають_аналіз_заспамленості(self, columns_config):

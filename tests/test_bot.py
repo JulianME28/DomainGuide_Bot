@@ -247,8 +247,8 @@ class TestВиконанняЗапиту:
             services, DonorQuery(section_key="magic", country=country_by_code("de"))
         )
 
-        assert executed.result.core.count == 6
-        assert executed.result.addendum.count == 4
+        assert executed.result.core.count == 9  # трикроковий підсумок Німеччини
+        assert executed.result.addendum.count == 2
         assert "Знайдено донорів" in executed.text
 
     async def test_у_тексті_немає_доменів(self, services, magic):
@@ -277,15 +277,19 @@ class TestВиконанняЗапиту:
         assert executed.result.core.count == 0
 
 
-class TestСтартБезКолонкиГЕО:
-    """Окрема вимога: бот має підніматися на даних без колонки країни."""
+class TestНаскрізнийЗапитКраїни:
+    """Бот має рахувати країну трикроковою моделлю від конфігу до картки."""
 
-    def test_карта_колонок_не_містить_гео(self, columns_config):
-        for section in columns_config.sections.values():
-            assert "geo" not in section.columns
+    async def test_морди_без_geo_теж_працюють(self, services):
+        """«Морди» колонки GEO не мають — водоспад працює на двох кроках."""
+        executed = await execute(
+            services, DonorQuery(section_key="mordy", country=country_by_code("de"))
+        )
+        # У базовій фікстурі «Морди» порожні — 0, але без падіння.
+        assert executed.result.available
 
-    async def test_бот_повністю_працює_без_гео(self, services):
-        """Наскрізно: конфіг → дані → запит → картка, без жодного поля гео."""
+    async def test_наскрізно_меджик(self, services):
+        """Конфіг → дані → запит → картка: країна визначається трьома сигналами."""
         executed = await execute(
             services, DonorQuery(section_key="magic", country=country_by_code("de"))
         )
@@ -293,8 +297,8 @@ class TestСтартБезКолонкиГЕО:
         assert executed.result.available
         assert executed.result.core.count > 0
         assert "Німеччина" in executed.text
-        # Країна визначилась із доменної зони, а не з колонки.
-        assert ".de" in executed.text
+        # Розклад складових видно в картці.
+        assert ".de" in executed.text and "GEO" in executed.text
 
     def test_сервіси_збираються(self, services):
         assert services.section_title("magic") == "Меджик"
