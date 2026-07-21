@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import html
+import time
 
 from app.analytics.engine import Aggregate, QueryResult
 from app.analytics.recommendations import Recommendations
@@ -61,6 +62,15 @@ def number(value: float | None) -> str:
     rounded = round(value)
     # Пробіл між тисячами робить довгі числа читабельними.
     return f"{rounded:,}".replace(",", " ")
+
+
+def _stale_note(as_of: float | None) -> str:
+    """Помітка, що числа з кешу, бо онлайн-оновлення щойно не вдалося."""
+    when = time.strftime("%d.%m %H:%M", time.localtime(as_of)) if as_of else "невідомо коли"
+    return (
+        f"🕓 <i>Онлайн-оновлення зараз недоступне (мережа). Показую збережені "
+        f"числа станом на {when}.</i>"
+    )
 
 
 def percent(value: float | None) -> str:
@@ -115,9 +125,15 @@ def render_result(result: QueryResult, *, recommendations: Recommendations | Non
     lines = [
         f"🗂 <b>База:</b> {escape(result.section_title)}",
         f"🔎 <b>Запит:</b> {escape(result.query.describe())}",
-        "",
-        f"✅ <b>Знайдено донорів:</b> {core.count}",
     ]
+
+    # Помітка про застарілі дані — одразу під запитом, щоб її не проґавили.
+    if result.stale:
+        lines.append("")
+        lines.append(_stale_note(result.as_of))
+
+    lines.append("")
+    lines.append(f"✅ <b>Знайдено донорів:</b> {core.count}")
 
     if core.count:
         lines.append(

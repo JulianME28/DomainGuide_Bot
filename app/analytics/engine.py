@@ -156,6 +156,12 @@ class QueryResult:
     tracks_spam: bool = False
     """Чи показувати в картці вихідні лінки й заспамленість (лише «Морди»)."""
 
+    stale: bool = False
+    """True, якщо числа з кешу (онлайн-оновлення щойно не вдалося)."""
+
+    as_of: float | None = None
+    """Час останнього успішного оновлення (для помітки про застарілість)."""
+
 
 # ---------------------------------------------------------------------------
 # Фільтрація
@@ -388,4 +394,6 @@ def run_query(dataset: Dataset, query: DonorQuery, *, with_breakdowns: bool = Tr
         country_breakdown=country_breakdown(core_donors) if with_breakdowns else (),
         total_in_base=dataset.count,
         tracks_spam=dataset.tracks_spam,
+        stale=dataset.stale,
+        as_of=dataset.loaded_at if dataset.stale else None,
     )

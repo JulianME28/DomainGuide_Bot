@@ -17,9 +17,13 @@
 from __future__ import annotations
 
 import json
+import socket
+import time
+from collections.abc import Callable
 from pathlib import Path
 
 import gspread
+import requests
 from google.oauth2.service_account import Credentials
 
 from app.data.columns import SectionConfig
@@ -30,10 +34,76 @@ logger = get_logger(__name__)
 # ТІЛЬКИ читання. Змінити щось у таблиці бот не може за визначенням.
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
 
+# ---------------------------------------------------------------------------
+# Повтор спроб при мережевих збоях.
+#
+# Google інколи рве з'єднання (ConnectionResetError, WinError 10054) або
+# ненадовго відповідає 5xx. Це минущі помилки: варто просто спробувати ще
+# раз. А от 403, відсутній аркуш чи колонка від повтору не зникнуть — їх
+# показуємо одразу.
+#
+# 3 спроби. Паузи наростають: 1 с перед 2-ю спробою, 3 с перед 3-ю.
+# (6 с у списку — про запас, якщо колись знадобиться 4-та спроба.)
+# ---------------------------------------------------------------------------
+_DEFAULT_BACKOFFS: tuple[float, ...] = (1.0, 3.0, 6.0)
+_DEFAULT_MAX_ATTEMPTS = 3
+
+# Типи помилок, які вважаємо тимчасовими й повторюємо.
+_TRANSIENT_TYPES: tuple[type[BaseException], ...] = (
+    ConnectionError,  # зокрема ConnectionResetError (WinError 10054), ConnectionAbortedError
+    TimeoutError,  # мережеві таймаути (у py3.10+ це і socket.timeout)
+    socket.timeout,
+    requests.exceptions.ConnectionError,
+    requests.exceptions.Timeout,
+    requests.exceptions.ChunkedEncodingError,
+)
+
+# HTTP-статуси, які означають «спробуй ще раз»: перевантаження й тимчасові збої.
+_TRANSIENT_STATUS = frozenset({408, 425, 429, 500, 502, 503, 504})
+
+# Текстові ознаки мережевого збою — запобіжник на випадок незвичних обгорток.
+_TRANSIENT_HINTS = ("10054", "connection reset", "connection aborted", "timed out", "broken pipe")
+
 
 class SheetsError(RuntimeError):
     """Проблема з доступом до таблиці. Текст пишеться зрозумілою мовою,
     бо його показують адміну в боті."""
+
+
+def _api_status(exc: BaseException) -> int | None:
+    """Дістає HTTP-статус із помилки gspread, якщо він там є."""
+    response = getattr(exc, "response", None)
+    return getattr(response, "status_code", None)
+
+
+def _is_transient(exc: BaseException) -> bool:
+    """Чи ця помилка тимчасова — тобто чи має сенс повторити спробу.
+
+    Перевіряє не лише саму помилку, а й увесь ланцюжок причин
+    (`__cause__`/`__context__`): requests часто загортає мережевий збій у
+    кілька рівнів, і справжня причина ховається всередині.
+    """
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, _TRANSIENT_TYPES):
+            return True
+        if _api_status(current) in _TRANSIENT_STATUS:
+            # _api_status повертає None для всього, що не є HTTP-помилкою gspread,
+            # а None у наборі статусів немає — тож зайвого спрацювання не буде.
+            return True
+        current = current.__cause__ or current.__context__
+
+    text = str(exc).lower()
+    return any(hint in text for hint in _TRANSIENT_HINTS)
+
+
+def _brief(exc: BaseException | None) -> str:
+    """Короткий опис помилки для лога: «ConnectionResetError: ...»."""
+    if exc is None:
+        return "невідома помилка"
+    return f"{type(exc).__name__}: {exc}"
 
 
 def _column_letter(index: int) -> str:
@@ -64,10 +134,22 @@ def _match_header(headers: list[str], wanted: str) -> int | None:
 class SheetsReader:
     """Обгортка над gspread: відкриває таблицю й читає дозволені колонки."""
 
-    def __init__(self, spreadsheet_id: str, credentials_file: Path) -> None:
+    def __init__(
+        self,
+        spreadsheet_id: str,
+        credentials_file: Path,
+        *,
+        sleeper: Callable[[float], None] | None = None,
+        backoffs: tuple[float, ...] = _DEFAULT_BACKOFFS,
+        max_attempts: int = _DEFAULT_MAX_ATTEMPTS,
+    ) -> None:
         self._spreadsheet_id = spreadsheet_id
         self._credentials_file = Path(credentials_file)
         self._client: gspread.Client | None = None
+        # sleeper винесено параметром, щоб тести не чекали справжні секунди.
+        self._sleep = sleeper if sleeper is not None else time.sleep
+        self._backoffs = tuple(backoffs)
+        self._max_attempts = max(1, max_attempts)
 
     # -- підключення ---------------------------------------------------------
 
@@ -141,8 +223,12 @@ class SheetsReader:
         except gspread.exceptions.APIError as exc:
             if "PERMISSION_DENIED" in str(exc) or "403" in str(exc):
                 raise self._access_error(exc) from exc
+            if _is_transient(exc):
+                raise  # 5xx / 429 — тимчасова, хай цикл повтору спробує ще раз
             raise SheetsError(f"Google повернув помилку: {exc}") from exc
         except Exception as exc:
+            if _is_transient(exc):
+                raise  # мережевий збій — сирою нагору, до циклу повтору
             raise SheetsError(f"Не вдалося відкрити таблицю: {type(exc).__name__}: {exc}") from exc
 
         try:
@@ -158,23 +244,68 @@ class SheetsReader:
     # -- читання -------------------------------------------------------------
 
     def read_section(self, section: SectionConfig) -> list[dict[str, str]]:
-        """Читає дозволені колонки одного розділу.
+        """Читає дозволені колонки одного розділу, з повтором при збоях мережі.
 
-        Повертає список рядків виду {"domain": "...", "dr": "...", ...},
-        де ключі — це РОЛІ, а не назви колонок. Далі коду байдуже, як
-        стовпчик називається в таблиці.
+        Мережеві помилки (розрив з'єднання, таймаут, 5xx) повторюються до
+        кількох разів із наростаючою паузою. Постійні помилки (403, немає
+        аркуша чи колонки) не повторюються — від повтору вони не зникнуть,
+        і користувач має одразу побачити зрозумілу причину.
 
         Порожній аркуш — це не помилка, а порожній список.
         """
         if not section.reads_data:
             return []
 
+        last_exc: BaseException | None = None
+        for attempt in range(1, self._max_attempts + 1):
+            try:
+                return self._read_section_once(section)
+            except SheetsError:
+                raise  # постійна помилка — повтор не допоможе, показуємо одразу
+            except Exception as exc:
+                # Сюди доходять лише мережеві збої: _read_section_once усе
+                # інше вже загорнув у SheetsError. Але про всяк випадок ще раз
+                # перевіряємо — і не-мережеве не повторюємо.
+                if not _is_transient(exc):
+                    raise SheetsError(
+                        f"Несподівана помилка читання «{section.sheet}»: {_brief(exc)}"
+                    ) from exc
+                last_exc = exc
+                if attempt < self._max_attempts:
+                    delay = self._backoffs[min(attempt - 1, len(self._backoffs) - 1)]
+                    logger.warning(
+                        "Читання «%s»: спроба %d з %d не вдалася (%s); повтор через %.0f с",
+                        section.sheet,
+                        attempt,
+                        self._max_attempts,
+                        _brief(exc),
+                        delay,
+                    )
+                    self._sleep(delay)
+                else:
+                    logger.error(
+                        "Читання «%s»: усі %d спроби не вдалися через мережу (%s)",
+                        section.sheet,
+                        self._max_attempts,
+                        _brief(exc),
+                    )
+
+        raise SheetsError(
+            "Не вдалося прочитати дані з таблиці: мережеве з'єднання нестабільне.\n"
+            f"Зроблено {self._max_attempts} спроби, остання помилка: {_brief(last_exc)}."
+        ) from last_exc
+
+    def _read_section_once(self, section: SectionConfig) -> list[dict[str, str]]:
+        """Одна спроба прочитати розділ. Мережеві збої летять сирими нагору —
+        їх ловить і повторює read_section."""
         worksheet = self._open_worksheet(section.sheet)
 
         # Крок 1: заголовки. Один невеликий запит.
         try:
             headers = worksheet.row_values(1)
         except Exception as exc:
+            if _is_transient(exc):
+                raise
             raise SheetsError(
                 f"Не вдалося прочитати заголовки аркуша «{section.sheet}»: {exc}"
             ) from exc
@@ -205,6 +336,8 @@ class SheetsReader:
         try:
             columns_data = worksheet.batch_get(ranges, major_dimension="COLUMNS")
         except Exception as exc:
+            if _is_transient(exc):
+                raise
             raise SheetsError(
                 f"Не вдалося прочитати дані з аркуша «{section.sheet}»: {type(exc).__name__}: {exc}"
             ) from exc

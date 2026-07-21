@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import Mapping
+from dataclasses import replace
 from typing import Protocol
 
 from app.data.columns import ColumnsConfig, SectionConfig
@@ -184,6 +185,23 @@ class DonorRepository:
                 return cached
 
             dataset = await asyncio.to_thread(self._read_blocking, section)
+
+            # Оновлення не вдалося, але в пам'яті Є попередні успішні дані.
+            # Краще трохи старі числа, ніж жодних: віддаємо кеш із поміткою,
+            # а сам кеш НЕ псуємо — його loaded_at лишається старим, тож
+            # наступний запит спробує оновитися ще раз (і підхопить дані,
+            # щойно мережа відновиться).
+            if not dataset.available:
+                previous = self._cache.get(section_key)
+                if previous is not None and previous.available:
+                    logger.warning(
+                        "«%s»: оновлення не вдалося (%s) — віддаю дані з кешу станом на %s",
+                        section.title,
+                        dataset.error,
+                        time.strftime("%H:%M:%S", time.localtime(previous.loaded_at)),
+                    )
+                    return replace(previous, stale=True)
+
             self._cache[section_key] = dataset
             return dataset
 

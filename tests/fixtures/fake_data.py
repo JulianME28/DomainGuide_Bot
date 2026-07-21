@@ -158,9 +158,22 @@ class FakeReader:
         self.rows_by_section = rows_by_section or {}
         self.errors = errors or {}
         self.calls: list[str] = []
+        # Розділи, читання яких зараз падає з мережевою помилкою — для
+        # перевірки, що репозиторій віддає кеш замість «база недоступна».
+        self.failing: dict[str, Exception] = {}
+
+    def fail_with(self, section_key: str, exc: Exception) -> None:
+        """Змусити наступні читання цього розділу падати з exc (імітація мережі)."""
+        self.failing[section_key] = exc
+
+    def recover(self, section_key: str) -> None:
+        """Мережа відновилася — читання знову працює."""
+        self.failing.pop(section_key, None)
 
     def read_section(self, section) -> list[dict[str, str]]:
         self.calls.append(section.key)
+        if section.key in self.failing:
+            raise self.failing[section.key]
         if section.key in self.errors:
             raise RuntimeError(self.errors[section.key])
         return [dict(row) for row in self.rows_by_section.get(section.key, [])]

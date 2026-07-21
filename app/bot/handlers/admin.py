@@ -7,6 +7,8 @@
 
 from __future__ import annotations
 
+import time
+
 from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.types import CallbackQuery, Message
@@ -67,7 +69,14 @@ async def admin_actions(callback: CallbackQuery, services: BotServices) -> None:
         datasets = await services.repository.refresh()
         lines = ["🔄 <b>Дані оновлено</b>", ""]
         for dataset in datasets:
-            if dataset.available:
+            if dataset.stale:
+                # Оновлення не вдалося (мережа), лишилися попередні дані.
+                when = time.strftime("%H:%M:%S", time.localtime(dataset.loaded_at))
+                lines.append(
+                    f"🕓 {dataset.title} — оновити не вдалося, показую кеш від {when} "
+                    f"({dataset.count} донорів)"
+                )
+            elif dataset.available:
                 lines.append(f"✅ {dataset.title} — {dataset.count} донорів")
             else:
                 lines.append(f"⚠️ {dataset.title} — {(dataset.error or '')[:150]}")
