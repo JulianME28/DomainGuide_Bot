@@ -30,26 +30,33 @@ class TestБойовийКонфіг:
         assert magic.columns["dr"] == "DR"
         assert magic.columns["traffic"] == "Traffic"
 
-    def test_geo_є_в_меджику_а_в_мордах_немає(self, columns_config):
-        """GEO (країна походження трафіку) підключена лише до «Меджика».
-
-        Це третій сигнал країни (крім зони й мови). «Морди» цієї колонки не
-        мають — там підрахунок країни працює на двох кроках.
-        """
+    def test_geo_підключена_до_обох_баз(self, columns_config):
+        """GEO (країна походження трафіку) — третій сигнал країни, той самий
+        формат «(cc, N)» і в «Меджику», і в «Мордах»."""
         assert columns_config.section("magic").columns.get("geo") == "GEO"
         assert columns_config.section("magic").has_geo
-        assert not columns_config.section("mordy").has_geo
+        assert columns_config.section("mordy").columns.get("geo") == "GEO"
+        assert columns_config.section("mordy").has_geo
         # Готової колонки «країна» як такої немає — країна виводиться, не читається.
         for section in columns_config.sections.values():
             assert "country" not in section.columns
 
-    def test_морди_мають_аналіз_заспамленості(self, columns_config):
-        """У «Морд» ті самі базові колонки плюс вихідні лінки й заспамленість."""
+    def test_морди_мають_заспамленість_і_geo(self, columns_config):
+        """У «Морд» базові колонки плюс вихідні лінки, заспамленість і GEO."""
         mordy = columns_config.section("mordy")
         assert mordy.reads_data
-        assert set(mordy.columns) == {"domain", "language", "dr", "traffic", "outlinks", "spam"}
+        assert set(mordy.columns) == {
+            "domain",
+            "language",
+            "dr",
+            "traffic",
+            "geo",
+            "outlinks",
+            "spam",
+        }
         assert mordy.columns["outlinks"] == "Вихідні"
         assert mordy.columns["spam"] == "Заспамленість"
+        assert mordy.columns["geo"] == "GEO"
 
     def test_сабміти_це_заглушка(self, columns_config):
         submits = columns_config.section("submits")

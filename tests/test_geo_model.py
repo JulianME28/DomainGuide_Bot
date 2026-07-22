@@ -28,6 +28,9 @@ from tests.fixtures.fake_data import (
     GERMANY_LANG,
     GERMANY_TOTAL,
     GERMANY_ZONE,
+    MORDY_DE_GEO,
+    MORDY_DE_TOTAL,
+    MORDY_DE_ZONE,
     SPAIN_NEUTRAL,
     SPAIN_TOTAL,
     UK_ADDENDUM,
@@ -133,15 +136,11 @@ class TestGEOКрок:
         assert any(d.domain == "de1.de" for d in de_zone)
         assert not any(d.domain == "de1.de" for d in de_geo)
 
-    async def test_geo_показник_у_картці_лише_для_меджика(self, magic, mordy):
+    async def test_geo_показник_у_обох_базах(self, magic, mordy):
+        """Тепер GEO є і в «Меджику», і в «Мордах» — розклад показує GEO в обох."""
         assert run_query(magic, country_query("de")).split.show_geo is True
-        # «Морди» колонки GEO не мають.
-        assert (
-            run_query(
-                mordy, DonorQuery(section_key="mordy", country=country_by_code("de"))
-            ).split.show_geo
-            is False
-        )
+        mordy_de = run_query(mordy, DonorQuery(section_key="mordy", country=country_by_code("de")))
+        assert mordy_de.split.show_geo is True
 
 
 class TestМоваЛишеGLOBAL:
@@ -320,43 +319,67 @@ class TestГлобальніЗониНікомуНеНалежать:
         assert not any("Колумбія" in label for label in labels)
 
 
-class TestБазаБезGEO:
-    async def test_морди_рахують_країну_без_geo(self, mordy):
-        """«Морди» колонки GEO не мають — водоспад працює на двох кроках."""
+class TestМордиTeжMаютьGEO:
+    async def test_морди_рахують_країну_трикроково(self, mordy):
+        """«Морди» тепер мають GEO — той самий водоспад, що й у «Меджику»."""
         result = run_query(mordy, DonorQuery(section_key="mordy", country=country_by_code("de")))
         assert result.available
-        assert result.split is not None
-        assert result.split.geo == 0, "GEO-складова відсутня"
-        assert result.split.show_geo is False
-        # зона .de: m1, m4, m7 = 3
-        assert result.split.zone == 3
-        assert result.split.total == result.core.count
+        assert result.split.show_geo is True
+        assert result.split.zone == MORDY_DE_ZONE == 3  # m1, m4, m7
+        assert result.split.geo == MORDY_DE_GEO == 1  # m2 (GEO de)
+        assert result.split.total == MORDY_DE_TOTAL == 4
+        assert result.core.count == MORDY_DE_TOTAL
 
-    async def test_биті_і_порожні_geo_не_падають(self):
-        """GEO у брудному вигляді не має ламати підрахунок."""
+    async def test_водоспад_без_подвійного_рахунку_в_мордах(self, mordy):
+        """m1 має і зону .de, і GEO(de) — рахується РАЗ (зона важливіша)."""
         from app.analytics.engine import classify_country
+
+        q = DonorQuery(section_key="mordy", country=country_by_code("de"))
+        zone_d, lang_d, geo_d, _ = classify_country(mordy, q)
+        ids = [id(d) for d in zone_d + lang_d + geo_d]
+        assert len(ids) == len(set(ids)), "жоден донор не потрапив у дві групи"
+        assert any(d.domain == "m1.de" for d in zone_d)
+        assert not any(d.domain == "m1.de" for d in geo_d)
+
+    async def test_морди_зберігають_вихідні_і_заспамленість(self, mordy):
+        """GEO не витіснила аналіз заспамленості — середні лишилися."""
+        result = run_query(mordy, DonorQuery(section_key="mordy", country=country_by_code("de")))
+        assert result.tracks_spam is True
+        assert result.core.avg_outlinks is not None
+
+    async def test_биті_і_порожні_geo_в_мордах_не_падають(self, mordy):
+        """m6 (порожня GEO) і m7 (битий формат) не ламають підрахунок."""
+        m6 = next(d for d in mordy.donors if d.domain == "m6.pl")
+        m7 = next(d for d in mordy.donors if d.domain == "m7.de")
+        assert (m6.geo_code, m6.geo_traffic) == ("", None)
+        assert (m7.geo_code, m7.geo_traffic) == ("", None)
+
+
+class TestБазаБезGEO:
+    """Синтетична база з tracks_geo=False — перевірка, що шлях без GEO не зламано."""
+
+    def _dataset(self, tracks_geo: bool):
         from app.data.models import Dataset, Donor
 
         donors = (
-            Donor(domain="a.fr", zone=".fr", language="french", dr=None, traffic=None),
-            Donor(
-                domain="b.de",
-                zone=".de",
-                language="german",
-                dr=None,
-                traffic=None,
-                geo_code="",
-                geo_traffic=None,
-            ),  # немає GEO
+            Donor("a.fr", ".fr", "french", None, None),
+            Donor("b.be", ".be", "french", None, None),  # французька на .be
+            Donor("c.com", ".com", "german", None, None),  # німецька на нейтральній
         )
-        ds = Dataset(
-            section_key="magic",
-            title="Меджик",
-            sheet_name="Меджик",
-            donors=donors,
-            loaded_at=0.0,
-            tracks_geo=True,
-        )
+        return Dataset("magic", "Меджик", "Меджик", donors, 0.0, tracks_geo=tracks_geo)
+
+    async def test_без_geo_водоспад_на_двох_кроках(self):
+        ds = self._dataset(tracks_geo=False)
+        result = run_query(ds, country_query("fr"))
+        assert result.split.show_geo is False
+        assert result.split.geo == 0
+        assert result.split.zone == 1  # a.fr
+        assert result.split.total == result.core.count
+
+    async def test_биті_і_порожні_geo_не_падають(self):
+        from app.analytics.engine import classify_country
+
+        ds = self._dataset(tracks_geo=True)
         zone_d, _lang_d, geo_d, _ = classify_country(ds, country_query("fr"))
         assert len(zone_d) == 1  # a.fr
-        assert geo_d == []
+        assert geo_d == []  # у синтетичних донорів GEO немає

@@ -97,14 +97,17 @@ class TestРозкладСкладових:
         card = render_result(run_query(magic, query_for("de")))
         assert "на зонах інших країн" in card
 
-    async def test_морди_без_geo_складової(self, mordy):
-        """У «Морд» немає GEO — розклад показує лише зону й мову, без «GEO»."""
+    async def test_морди_з_geo_складовою(self, mordy):
+        """У «Морд» тепер є GEO — розклад показує три складові, як у «Меджику».
+
+        Німеччина: 4 (.de 3 | мова 0 | GEO 1) — m1,m4,m7 у зоні, m2 через GEO(de).
+        """
         card = render_result(
             run_query(mordy, DonorQuery(section_key="mordy", country=country_by_code("de")))
         )
         found = next(line for line in card.split("\n") if "Знайдено донорів" in line)
-        assert "GEO" not in found
-        assert ".de" in found and "мова" in found
+        assert "4 (.de 3 | мова 0 | GEO 1)" in found
+        assert "GEO" in found
 
     async def test_якщо_додатка_немає_рядка_теж_немає(self, magic):
         card = render_result(run_query(magic, query_for("de", dr_min=100)))
