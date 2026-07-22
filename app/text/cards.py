@@ -273,7 +273,7 @@ def render_recommendations(recommendations: Recommendations) -> str:
         reserve = recommendations.reserve
         blocks.append(
             f"➕ <b>Ядро + запас:</b> {reserve.core_count} точно за запитом "
-            f"і ще {reserve.reserve_count} — {escape(reserve.reserve_label)}. "
+            f"і ще {reserve.reserve_count} {escape(reserve.reserve_label)}. "
             f"Разом до {reserve.total}."
         )
 

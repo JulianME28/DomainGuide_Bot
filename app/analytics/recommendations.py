@@ -46,8 +46,9 @@ from app.dictionary.countries import countries_in_region, countries_with_languag
 from app.dictionary.zones import is_global_zone
 
 # Наскільки пом'якшуємо вимоги в підказках.
-DR_RELAXATION = 10
-TRAFFIC_DIVIDER = 2
+DR_RELAXATION = 10  # DR: поріг на ±10
+TRAFFIC_DIVIDER = 2  # трафік і вихідні лінки: поріг ÷2 (min) або ×2 (max)
+SPAM_RELAXATION = 10  # заспамленість: поріг на ±10 відсоткових пунктів
 
 # Скільки суміжних гео показувати, щоб не завалити користувача списком.
 MAX_SUGGESTIONS = 6
@@ -264,45 +265,80 @@ def relaxed_suggestions(dataset: Dataset, query: DonorQuery) -> tuple[Suggestion
 # ---------------------------------------------------------------------------
 
 
-def reserve_group(dataset: Dataset, query: DonorQuery) -> ReserveGroup | None:
-    """Основна група і запасна — щоб було що запропонувати понад ядро.
+def _relax_metrics(query: DonorQuery) -> tuple[DonorQuery, list[str]]:
+    """Будує запит зі зниженими метричними порогами й описує, що саме знижено.
 
-    Запас = донори основною мовою країни, яких НЕМАЄ в ядрі, з пом'якшеними
-    вимогами. Саме тому ядро й запас можна складати без подвійного рахунку.
+    Послаблення РОЗШИРЮЄ діапазон: нижній поріг («від») опускаємо, верхній
+    («до») піднімаємо. DR — на 10, трафік і вихідні лінки — удвічі,
+    заспамленість — на 10 відсоткових пунктів.
+
+    Повертає (пом'якшений запит, список фраз «метрика від/до X замість Y»).
+    Порожній список означає, що послаблювати не було чого — і рядка запасу
+    тоді не буде.
+    """
+    changes: dict[str, float] = {}
+    labels: list[str] = []
+
+    def loosen_min(field: str, name: str, new: float) -> None:
+        old = getattr(query, field)
+        if old and new < old:
+            changes[field] = new
+            labels.append(f"{name} від {_int(new)} замість {_int(old)}")
+
+    def loosen_max(field: str, name: str, new: float) -> None:
+        old = getattr(query, field)
+        if old is not None and new > old:
+            changes[field] = new
+            labels.append(f"{name} до {_int(new)} замість {_int(old)}")
+
+    loosen_min("dr_min", "DR", max(0.0, (query.dr_min or 0) - DR_RELAXATION))
+    loosen_max("dr_max", "DR", (query.dr_max or 0) + DR_RELAXATION)
+    loosen_min("traffic_min", "трафік", (query.traffic_min or 0) / TRAFFIC_DIVIDER)
+    loosen_max("traffic_max", "трафік", (query.traffic_max or 0) * TRAFFIC_DIVIDER)
+    loosen_min("outlinks_min", "вихідні лінки", (query.outlinks_min or 0) / TRAFFIC_DIVIDER)
+    loosen_max("outlinks_max", "вихідні лінки", (query.outlinks_max or 0) * TRAFFIC_DIVIDER)
+    loosen_min("spam_min", "заспамленість", max(0.0, (query.spam_min or 0) - SPAM_RELAXATION))
+    loosen_max("spam_max", "заспамленість", min(100.0, (query.spam_max or 0) + SPAM_RELAXATION))
+
+    return query.replace(**changes), labels
+
+
+def reserve_group(dataset: Dataset, query: DonorQuery) -> ReserveGroup | None:
+    """Ядро + запас: скільки донорів додасться, ЯКЩО послабити метрики.
+
+    Запас має сенс лише коли є що послаблювати. Якщо метричних фільтрів немає
+    (DR і трафік без обмежень, для «Морд» — і вихідні лінки із заспамленістю),
+    рядок «Ядро + запас» не показуємо взагалі.
+
+    Запас = ПРИРІСТ від послаблення: донори тієї самої країни (за тією ж
+    трикроковою логікою, що й підсумок), які НЕ проходять вихідні пороги, але
+    проходять знижені. Формула passes_result(softer) AND NOT passes_result(query)
+    сама собою виключає:
+      * ядро — воно проходить і вихідні пороги;
+      * мовні рядки «на зонах інших країн» / «на нейтральних зонах» — їхні
+        донори взагалі не в підсумку країни, тож passes_result для них хибний.
+    Тому «Разом» можна назвати клієнту без подвійного рахунку.
     """
     country = query.country
-    if country is None or country.language is None:
+    if country is None or query.kind is not QueryKind.COUNTRY:
         return None
 
-    # Запам'ятовуємо ядро за номерами рядків — так порівняння точне.
-    # Ядро — це новий трикроковий підсумок (зона + мова + GEO).
-    core_indices = {
-        index for index, donor in enumerate(dataset.donors) if passes_result(donor, query)
-    }
-    if not core_indices:
-        return None
-
-    softer = query.replace(
-        dr_min=max(0.0, query.dr_min - DR_RELAXATION) if query.dr_min else None,
-        traffic_min=query.traffic_min / TRAFFIC_DIVIDER if query.traffic_min else None,
-    )
-    language_keys = country.language.data_keys
+    softer, relaxations = _relax_metrics(query)
+    if not relaxations:
+        return None  # жодного метричного порогу — послаблювати нічого
 
     reserve_count = sum(
         1
-        for index, donor in enumerate(dataset.donors)
-        if index not in core_indices  # головне: не рахуємо тих, хто вже в ядрі
-        and donor.language in language_keys
-        and passes_metrics(donor, softer)
+        for donor in dataset.donors
+        if passes_result(donor, softer) and not passes_result(donor, query)
     )
-
     if reserve_count == 0:
         return None
 
     return ReserveGroup(
-        core_count=len(core_indices),
+        core_count=result_count(dataset, query),
         reserve_count=reserve_count,
-        reserve_label=f"донори мовою {country.language.name_uk} з м'якшими вимогами",
+        reserve_label="з пониженими вимогами (" + ", ".join(relaxations) + ")",
     )
 
 

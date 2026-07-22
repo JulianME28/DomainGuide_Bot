@@ -96,23 +96,62 @@ class TestПониженняВимог:
 
 
 class TestЯдроІЗапас:
-    async def test_запас_не_перетинається_з_ядром(self, magic):
-        """Ключова умова: тільки так ядро й запас можна складати."""
-        group = reserve_group(magic, germany())
-        assert group is not None
-        assert group.core_count == 9  # трикроковий підсумок Німеччини
-        assert group.reserve_count == 2  # німецька поза підсумком (at1, ch1)
-        assert group.total == 11
+    async def test_без_метрик_запасу_немає(self, magic):
+        """Немає що послаблювати → рядка «Ядро + запас» немає взагалі."""
+        assert reserve_group(magic, germany()) is None
 
-    async def test_запас_це_мова_країни(self, magic):
-        group = reserve_group(magic, germany())
-        assert "німецька" in group.reserve_label
+    async def test_запас_це_приріст_від_послаблення(self, magic):
+        """DR≥50: у підсумку лише de4(55). Знижуємо до DR≥40 → +de1(40, зона),
+        +glob1(45, мова). Запас = саме ці 2, ядро лишається 1."""
+        group = reserve_group(magic, germany(dr_min=50))
+        assert group is not None
+        assert group.core_count == 1
+        assert group.reserve_count == 2
+        assert group.total == 3
+
+    async def test_підпис_містить_фактичні_пороги(self, magic):
+        group = reserve_group(magic, germany(dr_min=50))
+        assert "з пониженими вимогами" in group.reserve_label
+        assert "DR від 40 замість 50" in group.reserve_label
+
+    async def test_трафік_теж_послаблюється(self, magic):
+        group = reserve_group(magic, germany(traffic_min=1000))
+        assert group is not None
+        assert group.core_count == 4
+        assert group.reserve_count == 1  # de3(500): не ≥1000, але ≥500
+        assert "трафік від 500 замість 1000" in group.reserve_label
+
+    async def test_запас_не_бере_мовні_рядки(self, magic):
+        """at1(.at, DR35) — німецька на зоні іншої країни («на зонах інших країн»).
+
+        DR≥40 → знижуємо до DR≥30. at1(35) підходить за DR, але він НЕ в підсумку
+        країни, тож у запас не потрапляє. Додається лише de6(30, зона .de) → 1.
+        """
+        group = reserve_group(magic, germany(dr_min=40))
+        assert group.reserve_count == 1  # тільки de6; at1 не рахується
+
+    async def test_запас_це_та_сама_країна(self, magic):
+        """Запас — донори тієї ж країни, лише зі зниженими метриками.
+
+        Приріст (2 для DR≥50) дорівнює різниці підсумків країни: зі зниженим
+        порогом мінус із вихідним."""
+        from app.analytics.engine import result_count
+
+        query = germany(dr_min=50)
+        softer = germany(dr_min=40)
+        gain = result_count(magic, softer) - result_count(magic, query)
+        assert reserve_group(magic, query).reserve_count == gain
 
     async def test_без_країни_запасу_немає(self, magic):
-        assert reserve_group(magic, DonorQuery(section_key="magic")) is None
+        assert reserve_group(magic, DonorQuery(section_key="magic", dr_min=30)) is None
 
-    async def test_порожнє_ядро_без_запасу(self, magic):
-        assert reserve_group(magic, germany(dr_min=100)) is None
+    async def test_морди_послаблення_їхніх_метрик(self, mordy):
+        """Для «Морд» послаблення враховує вихідні лінки й заспамленість."""
+        query = DonorQuery(section_key="mordy", country=country_by_code("de"), outlinks_max=10)
+        group = reserve_group(mordy, query)
+        assert group is not None
+        assert group.reserve_count == 1  # m1(16 вихідних): не ≤10, але ≤20
+        assert "вихідні лінки до 20 замість 10" in group.reserve_label
 
 
 class TestАналізДефіциту:
