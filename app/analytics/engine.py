@@ -9,21 +9,29 @@
 подвійного рахунку, кожен наступний крок бере лише ще не порахованих):
 
   (а) ЗОНА     — доменна зона ∈ ccTLD країни (Франція → .fr).
-  (б) МОВА     — основна мова країни І зона ∈ GLOBAL_ZONES (нейтральні:
-                 .com .net .org …). Зони ІНШИХ країн (.de, .be) сюди не входять.
   (в) GEO      — код країни в колонці GEO і трафік N > 0. Зона тут не важлива:
                  донор із зоною .de і GEO «(fr, 5000)» на запит про Францію
                  рахується сюди, а на запит про Німеччину — у крок (а).
+  (б) МОВА     — основна мова країни І зона ∈ GLOBAL_ZONES (нейтральні:
+                 .com .net .org …). Зони ІНШИХ країн (.de, .be) сюди не входять.
 
-Підсумок = (а) + (б) + (в). Один запит — кожен донор рівно в одній групі.
-Похибка й «ядро + запас» рахуються від ПІДСУМКУ, а не від окремої складової.
+СПІЛЬНІ МОВИ (en, es, pt, ar — ті, у кого language.widespread) крок (б) у
+підсумок НЕ додають. Причина з реальної роботи: англійської в базі ~17 000,
+і якби кожна англомовна країна забирала одні й ті самі .com-сайти, Британія
+й Ірландія показували б по 14 000 «своїх» донорів — неправда. Тому:
 
-ОСТАННІЙ РЯДОК картки — окрема пропозиція, у підсумок НЕ входить:
+    однозначна мова (fr, de, it, …):  підсумок = зона + GEO + мова-на-GLOBAL
+    спільна мова    (en, es, pt, ar): підсумок = зона + GEO
 
-    💬 французькою на зонах інших країн — N
+Один запит — кожен донор рівно в одній групі. Похибка й «ядро + запас»
+рахуються від ПІДСУМКУ, а не від окремої складової.
 
-Це донори мови країни на ccTLD ІНШИХ країн (не своя зона, не нейтральні),
-і лише ті, кого не враховано в підсумку (частина могла зайти через GEO).
+ОКРЕМІ РЯДКИ-ПРОПОЗИЦІЇ (у підсумок НЕ входять, без подвійного показу):
+
+    💬 французькою на зонах інших країн — N     ← мова на ccTLD інших країн
+    💬 англійською на нейтральних зонах — N     ← лише для спільних мов
+
+Другий рядок — це якраз крок (б), винесений з підсумку для спільних мов.
 
 GEO є лише в «Меджику». «Морди» колонки GEO не мають — там крок (в) просто
 відсутній (0), підрахунок працює на двох кроках, нічого не обнуляється.
@@ -136,9 +144,16 @@ class CountrySplit:
     show_geo: bool
     """Чи показувати GEO-складову. False для баз без колонки GEO («Морди»)."""
 
+    show_language: bool = True
+    """Чи показувати складову «мова» і чи входить вона в підсумок.
+
+    False для спільних мов (en, es, pt, ar): там мова-на-нейтральних-зонах
+    у підсумок не входить, а виноситься окремим рядком-пропозицією."""
+
     @property
     def total(self) -> int:
-        return self.zone + self.language + self.geo
+        base = self.zone + self.geo
+        return base + self.language if self.show_language else base
 
 
 @dataclass(frozen=True, slots=True)
@@ -175,6 +190,12 @@ class QueryResult:
     """Розклад підсумку на зону/мову/GEO — лише для запиту про країну."""
 
     addendum: LanguageAddendum | None = None
+    """Рядок «мовою на зонах інших країн» — донори на ccTLD інших країн."""
+
+    neutral_offer: LanguageAddendum | None = None
+    """Рядок «мовою на нейтральних зонах» — лише для спільних мов: крок (б),
+    винесений із підсумку (щоб Британія не забирала всі .com-сайти)."""
+
     zone_breakdown: tuple[tuple[str, int], ...] = ()
     language_breakdown: tuple[tuple[str, int], ...] = ()
     country_breakdown: tuple[tuple[str, int], ...] = ()
@@ -234,7 +255,7 @@ def passes_core(donor: Donor, query: DonorQuery) -> bool:
     """Чи потрапляє донор у ядро запиту (для НЕ-країнних запитів).
 
     Це проста перевірка «зона + мова + метрики». Запит про КРАЇНУ рахується
-    інакше — трикроковим водоспадом (див. _country_step / classify_country).
+    інакше — моделлю країни (див. _country_bucket / classify_country).
     """
     zones = query.core_zones
     if zones and donor.zone not in zones:
@@ -260,19 +281,38 @@ def select_core(dataset: Dataset, query: DonorQuery) -> list[Donor]:
 # ---------------------------------------------------------------------------
 
 
-def _country_step(donor: Donor, country) -> str | None:
-    """Яким кроком водоспаду донор належить країні: "zone" / "language" / "geo"
-    / None. Метрики тут НЕ перевіряються — це робить той, хто викликає.
+def _is_widespread(country) -> bool:
+    """Чи основна мова країни спільна (en, es, pt, ar) — нею пишуть багато країн."""
+    return bool(country and country.language and country.language.widespread)
 
-    Порядок кроків і є «без подвійного рахунку»: перший, що спрацював, виграє.
+
+def _country_bucket(donor: Donor, country) -> str | None:
+    """До якого букета країни належить донор:
+
+        "zone"        — доменна зона країни (в підсумку);
+        "geo"         — GEO-код країни з N>0 (в підсумку);
+        "lang_global" — мова країни на нейтральній зоні (.com/.net);
+        "lang_other"  — мова країни на ccTLD ІНШОЇ країни;
+        None          — жоден.
+
+    Пріоритет: зона → GEO → мова. Саме тому .com-донор із GEO країни
+    потрапляє в «geo» (підсумок), а не в «lang_global» — без подвійного
+    рахунку між пропозицією й підсумком. Метрики тут НЕ перевіряються.
+
+    Чи входить букет у підсумок, вирішує вже _in_country_total: для спільних
+    мов «lang_global» у підсумок не йде.
     """
     if donor.zone in country.zones:
         return "zone"
-    keys = country.language.data_keys if country.language else frozenset()
-    if donor.language in keys and is_global_zone(donor.zone):
-        return "language"
     if donor.geo_code == country.code and donor.has_measured_geo:
         return "geo"
+    keys = country.language.data_keys if country.language else frozenset()
+    if donor.language in keys:
+        if is_global_zone(donor.zone):
+            return "lang_global"
+        other = country_by_zone(donor.zone)
+        if other is not None and other.code != country.code:
+            return "lang_other"
     return None
 
 
@@ -281,49 +321,58 @@ def classify_country(
 ) -> tuple[list[Donor], list[Donor], list[Donor], list[Donor]]:
     """Ділить донорів на групи для запиту про країну — за ОДИН прохід.
 
-    Повертає (зона, мова, geo, додаток). Перші три — це підсумок (кожен
-    донор рівно в одній групі). Четверта — окрема пропозиція «мова на зонах
-    інших країн», яка в підсумок не входить.
+    Повертає (зона, мова-на-нейтральних, geo, мова-на-інших-зонах). Кожен
+    донор рівно в одному букеті. Усі відфільтровані метриками запиту.
 
-    Усі чотири групи відфільтровані метриками (DR/трафік) запиту.
+    Що входить у ПІДСУМОК, залежить від мови (див. run_query): зона й geo —
+    завжди; мова-на-нейтральних — лише для однозначних мов. Мова-на-інших —
+    ніколи (це окрема пропозиція).
     """
     country = query.country
     zone_d: list[Donor] = []
-    lang_d: list[Donor] = []
+    lang_global_d: list[Donor] = []
     geo_d: list[Donor] = []
-    addendum_d: list[Donor] = []
+    lang_other_d: list[Donor] = []
 
-    keys = country.language.data_keys if country and country.language else frozenset()
+    buckets = {
+        "zone": zone_d,
+        "geo": geo_d,
+        "lang_global": lang_global_d,
+        "lang_other": lang_other_d,
+    }
 
     for donor in dataset.donors:
         if not passes_metrics(donor, query):
             continue
-        step = _country_step(donor, country)
-        if step == "zone":
-            zone_d.append(donor)
-        elif step == "language":
-            lang_d.append(donor)
-        elif step == "geo":
-            geo_d.append(donor)
-        elif donor.language in keys:
-            # Не в підсумку. Якщо це мова країни на ccTLD ІНШОЇ країни
-            # (не своя зона — інакше був би крок «zone»; не нейтральна —
-            # інакше крок «language») — це додаток «на зонах інших країн».
-            other = country_by_zone(donor.zone)
-            if other is not None and other.code != country.code:
-                addendum_d.append(donor)
+        bucket = _country_bucket(donor, country)
+        if bucket is not None:
+            buckets[bucket].append(donor)
 
-    return zone_d, lang_d, geo_d, addendum_d
+    return zone_d, lang_global_d, geo_d, lang_other_d
+
+
+def _in_country_total(donor: Donor, country) -> bool:
+    """Чи входить донор у ПІДСУМОК країни (без перевірки метрик).
+
+    Зона й GEO — завжди. Мова на нейтральних зонах — лише для однозначних
+    мов; для спільних (en, es, pt, ar) вона винесена окремим рядком.
+    """
+    bucket = _country_bucket(donor, country)
+    if bucket in ("zone", "geo"):
+        return True
+    if bucket == "lang_global":
+        return not _is_widespread(country)
+    return False
 
 
 def passes_result(donor: Donor, query: DonorQuery) -> bool:
     """Чи входить донор у ПІДСУМОК запиту.
 
-    Для запиту про країну — трикрокова модель; для решти — звичайне ядро.
+    Для запиту про країну — модель країни; для решти — звичайне ядро.
     Спільний предикат, щоб рекомендації рахували те саме число, що й картка.
     """
     if query.kind is QueryKind.COUNTRY and query.country is not None:
-        return passes_metrics(donor, query) and _country_step(donor, query.country) is not None
+        return passes_metrics(donor, query) and _in_country_total(donor, query.country)
     return passes_core(donor, query)
 
 
@@ -332,14 +381,14 @@ def result_count(dataset: Dataset, query: DonorQuery) -> int:
     return sum(1 for donor in dataset.donors if passes_result(donor, query))
 
 
-def _build_addendum(country, addendum_donors: list[Donor]) -> LanguageAddendum | None:
-    """Складає останній рядок «мовою на зонах інших країн» із групи донорів."""
+def _build_offer(country, donors: list[Donor]) -> LanguageAddendum | None:
+    """Складає рядок-пропозицію (на зонах інших країн / на нейтральних зонах)."""
     language = country.language if country else None
-    if language is None or not addendum_donors:
+    if language is None or not donors:
         return None
     return LanguageAddendum(
         language=language,
-        count=len(addendum_donors),
+        count=len(donors),
         zone_label=country.zones_label,
         country_name=country.name_uk,
     )
@@ -469,21 +518,30 @@ def run_query(dataset: Dataset, query: DonorQuery, *, with_breakdowns: bool = Tr
 
     query = normalize_query(dataset, query)
 
-    # Запит про КРАЇНУ рахується трикроковим водоспадом; решта — звичайним
-    # ядром. Мовний додаток і розклад складових — тільки для країни.
+    # Запит про КРАЇНУ рахується моделлю країни; решта — звичайним ядром.
+    # Розклад складових і рядки-пропозиції — тільки для країни.
     split: CountrySplit | None = None
     addendum: LanguageAddendum | None = None
+    neutral_offer: LanguageAddendum | None = None
     if query.kind is QueryKind.COUNTRY and query.country is not None:
-        zone_d, lang_d, geo_d, addendum_d = classify_country(dataset, query)
-        core_donors = zone_d + lang_d + geo_d
+        country = query.country
+        zone_d, lang_global_d, geo_d, lang_other_d = classify_country(dataset, query)
+        widespread = _is_widespread(country)
+
+        # Мова-на-нейтральних входить у підсумок лише для однозначних мов.
+        core_donors = zone_d + geo_d + ([] if widespread else lang_global_d)
         split = CountrySplit(
             zone=len(zone_d),
-            language=len(lang_d),
+            language=len(lang_global_d),
             geo=len(geo_d),
-            main_zone=query.country.main_zone,
+            main_zone=country.main_zone,
             show_geo=dataset.tracks_geo,
+            show_language=not widespread,
         )
-        addendum = _build_addendum(query.country, addendum_d)
+        addendum = _build_offer(country, lang_other_d)
+        # Для спільних мов крок (б) виноситься окремим рядком.
+        if widespread:
+            neutral_offer = _build_offer(country, lang_global_d)
     else:
         core_donors = select_core(dataset, query)
 
@@ -493,6 +551,7 @@ def run_query(dataset: Dataset, query: DonorQuery, *, with_breakdowns: bool = Tr
         core=aggregate(core_donors),
         split=split,
         addendum=addendum,
+        neutral_offer=neutral_offer,
         zone_breakdown=zone_breakdown(core_donors) if with_breakdowns else (),
         language_breakdown=language_breakdown(core_donors) if with_breakdowns else (),
         country_breakdown=country_breakdown(core_donors) if with_breakdowns else (),

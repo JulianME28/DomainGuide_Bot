@@ -151,6 +151,19 @@ class TestУсеРазом:
         labels = " ".join(s.label for s in recommendations.same_region)
         assert "Франція" in labels or "Бельгія" in labels
 
+    async def test_суміжна_спільномовна_країна_без_мовного_кроку(self, magic):
+        """Головне заради чого зміна: Британія у суміжних — підсумок без мови.
+
+        Британія (спільна мова) = зона(3) + GEO(0) = 3, а не 3+2(мова)=5.
+        На реальній базі це різниця між сотнями й тисячами.
+        """
+        from app.dictionary.countries import country_by_code
+
+        france = DonorQuery(section_key="magic", country=country_by_code("fr"))
+        recommendations = build_recommendations(magic, france)
+        britain = next(s for s in recommendations.same_region if "Британія" in s.label)
+        assert britain.count == 3  # без мовного кроку (інакше було б 5)
+
     async def test_регіон_не_дублює_спільну_мову(self, magic):
         recommendations = build_recommendations(magic, germany())
         language_labels = {s.label for s in recommendations.same_language}

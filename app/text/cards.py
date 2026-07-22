@@ -114,10 +114,21 @@ def _found_count(result: QueryResult) -> str:
     if split is None:
         return str(result.core.count)
 
-    parts = [f"{escape(split.main_zone)} {split.zone}", f"мова {split.language}"]
+    parts = [f"{escape(split.main_zone)} {split.zone}"]
+    # Складову «мова» ховаємо для спільних мов — там її немає в підсумку.
+    if split.show_language:
+        parts.append(f"мова {split.language}")
     if split.show_geo:
         parts.append(f"GEO {split.geo}")
     return f"{split.total} ({' | '.join(parts)})"
+
+
+def _error_note(core: Aggregate) -> str:
+    """Один рядок про похибку: діапазон від нижньої межі до підсумку."""
+    return (
+        f"<i>Зверніть увагу: орієнтовна кількість з урахуванням похибки "
+        f"{number(core.min_estimate)}–{number(core.count)} (допустима похибка 30%)</i>"
+    )
 
 
 def render_result(result: QueryResult, *, recommendations: Recommendations | None = None) -> str:
@@ -149,10 +160,6 @@ def render_result(result: QueryResult, *, recommendations: Recommendations | Non
     lines.append(f"✅ <b>Знайдено донорів:</b> {_found_count(result)}")
 
     if core.count:
-        lines.append(
-            f"📐 <b>Орієнтовна кількість з урахуванням похибки:</b> "
-            f"від {core.min_estimate} до {core.count}"
-        )
         lines.append("")
         lines.extend(_metrics_block(core, tracks_spam=result.tracks_spam))
     else:
@@ -177,54 +184,60 @@ def render_result(result: QueryResult, *, recommendations: Recommendations | Non
         lines.append("")
         lines.extend(warnings)
 
-    # -- примітка про похибку ------------------------------------------------
+    # -- примітка про похибку (один рядок) -----------------------------------
     if core.count:
         lines.append("")
-        lines.append(
-            "<i>Зверніть увагу: підсумкова кількість є орієнтовною. Допустима похибка — до 30%.</i>"
-        )
+        lines.append(_error_note(core))
 
-    # -- рекомендації (коротким блоком, до мовного рядка) --------------------
+    # -- рекомендації (коротким блоком, до мовних рядків) --------------------
     if recommendations is not None:
         extra = render_recommendations(recommendations)
         if extra:
             lines.append("")
             lines.append(extra)
 
-    # -- МОВНИЙ РЯДОК — ЗАВЖДИ ОСТАННІЙ --------------------------------------
-    language_block = render_language_addendum(result)
-    if language_block:
+    # -- МОВНІ РЯДКИ-ПРОПОЗИЦІЇ — ЗАВЖДИ ОСТАННІ -----------------------------
+    for block in render_language_offers(result):
         lines.append("")
-        lines.append(language_block)
+        lines.append(block)
 
     return "\n".join(lines)
 
 
-def render_language_addendum(result: QueryResult) -> str:
-    """Мовний додаток — окремий останній блок картки.
+def render_language_offers(result: QueryResult) -> list[str]:
+    """Мовні рядки-пропозиції — окремі останні блоки картки.
 
-    Читається однозначно: «крім донорів у зоні .de, є ще N донорів
-    німецькою мовою поза цією зоною». Із головним числом не сумується
-    і поруч із ним не стоїть.
+    Їх може бути до двох, і жоден НЕ входить у підсумок:
+      1. «на нейтральних зонах» — лише для спільних мов (крок (б), винесений
+         із підсумку, щоб Британія не забирала всі .com-сайти);
+      2. «на зонах інших країн» — мова країни на ccTLD інших країн.
+
+    Для спільних мов до обох додається застереження «це не лише [країна]».
     """
-    addendum = result.addendum
-    if addendum is None:
-        return ""
+    blocks: list[str] = []
 
-    line = (
-        f"{LANGUAGE_MARK} <b>{escape(addendum.language.instrumental_uk)} "
-        f"на зонах інших країн — {addendum.count}</b>"
-    )
-
-    if addendum.needs_warning:
-        # Спільні мови (en, es, pt, ar): цією мовою пишуть у багатьох країнах,
-        # тому мовне число не можна читати як «ще стільки ж донорів країни».
-        line += (
-            f"\n⚠️ <i>{escape(addendum.language.instrumental_uk)} пишуть багато країн, "
-            f"не лише {escape(addendum.country_name)}.</i>"
+    if result.neutral_offer is not None:
+        offer = result.neutral_offer
+        line = (
+            f"{LANGUAGE_MARK} <b>{escape(offer.language.instrumental_uk)} "
+            f"на нейтральних зонах — {number(offer.count)}</b> "
+            f"<i>(це не лише {escape(offer.country_name)})</i>"
         )
+        blocks.append(line)
 
-    return line
+    if result.addendum is not None:
+        offer = result.addendum
+        line = (
+            f"{LANGUAGE_MARK} <b>{escape(offer.language.instrumental_uk)} "
+            f"на зонах інших країн — {number(offer.count)}</b>"
+        )
+        if offer.needs_warning:
+            # Спільна мова: нею пишуть багато країн, тому число не можна
+            # читати як «ще стільки ж донорів саме цієї країни».
+            line += f" <i>(це не лише {escape(offer.country_name)})</i>"
+        blocks.append(line)
+
+    return blocks
 
 
 def render_recommendations(recommendations: Recommendations) -> str:

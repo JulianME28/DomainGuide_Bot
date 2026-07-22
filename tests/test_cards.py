@@ -114,17 +114,19 @@ class TestРозкладСкладових:
 class TestПопередженняПроСпільніМови:
     async def test_англійська_попереджає(self, magic):
         card = render_result(run_query(magic, query_for("gb")))
-        assert "пишуть багато країн" in card
-        assert "не лише Британія" in card
+        # Спільна мова: до мовних рядків додається «(це не лише Британія)».
+        assert "це не лише Британія" in card
 
     async def test_французька_не_попереджає(self, magic):
         card = render_result(run_query(magic, query_for("fr")))
         assert LANGUAGE_MARK in card, "мовний рядок має бути"
-        assert "пишуть багато країн" not in card, "а попередження — ні"
+        assert "це не лише" not in card, "а застереження — ні"
 
-    async def test_попередження_стоїть_після_мовного_рядка(self, magic):
+    async def test_британія_має_обидва_мовні_рядки(self, magic):
+        """Для спільної мови — і нейтральний рядок, і рядок інших зон."""
         card = render_result(run_query(magic, query_for("gb")))
-        assert card.index(LANGUAGE_MARK) < card.index("пишуть багато країн")
+        assert "на нейтральних зонах" in card
+        assert "на зонах інших країн" in card
 
 
 class TestПопередженняПроПоказники:
@@ -135,12 +137,15 @@ class TestПопередженняПроПоказники:
 
     async def test_похибка_завжди_згадується(self, magic):
         card = render_result(run_query(magic, query_for("de")))
-        assert "до 30%" in card
+        # Німеччина: підсумок 9 → нижня межа 6.
+        assert "орієнтовна кількість з урахуванням похибки 6–9 (допустима похибка 30%)" in card
+        # Старого окремого рядка «Орієнтовна кількість...» більше немає.
+        assert "Орієнтовна кількість з урахуванням похибки:" not in card
 
     async def test_порожній_результат(self, magic):
         card = render_result(run_query(magic, query_for("jp")))
         assert "не знайдено" in card
-        assert "до 30%" not in card, "для нуля похибка не має сенсу"
+        assert "допустима похибка" not in card, "для нуля похибка не має сенсу"
 
 
 class TestБезпекаКартки:

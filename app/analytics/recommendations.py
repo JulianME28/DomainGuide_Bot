@@ -131,8 +131,15 @@ def _country_totals(dataset: Dataset, query: DonorQuery, countries: tuple) -> di
 
     Метрики (DR/трафік) поточного запиту застосовуються; змінна тут — країна.
     """
+    # Для кожної країни: зони, ключі мови і чи мова спільна (тоді крок «мова»
+    # у підсумок не входить — саме заради цього й уся зміна).
     specs = [
-        (c.code, frozenset(c.zones), c.language.data_keys if c.language else frozenset())
+        (
+            c.code,
+            frozenset(c.zones),
+            c.language.data_keys if c.language else frozenset(),
+            bool(c.language and c.language.widespread),
+        )
         for c in countries
     ]
     counts = {c.code: 0 for c in countries}
@@ -145,9 +152,14 @@ def _country_totals(dataset: Dataset, query: DonorQuery, countries: tuple) -> di
         geo_code = donor.geo_code
         geo_ok = donor.has_measured_geo
         is_global = is_global_zone(zone)
-        for code, zones, keys in specs:
-            # Той самий водоспад, що й у моделі країни: зона → мова → GEO.
-            if zone in zones or (language in keys and is_global) or (geo_ok and geo_code == code):
+        for code, zones, keys, widespread in specs:
+            # Те саме правило, що й у моделі країни: зона + GEO завжди;
+            # мова на нейтральних зонах — лише для однозначних мов.
+            if (
+                zone in zones
+                or (geo_ok and geo_code == code)
+                or (not widespread and language in keys and is_global)
+            ):
                 counts[code] += 1
 
     return counts

@@ -28,9 +28,11 @@ from tests.fixtures.fake_data import (
     GERMANY_LANG,
     GERMANY_TOTAL,
     GERMANY_ZONE,
+    SPAIN_NEUTRAL,
+    SPAIN_TOTAL,
     UK_ADDENDUM,
     UK_GEO,
-    UK_LANG,
+    UK_NEUTRAL,
     UK_TOTAL,
     UK_ZONE,
 )
@@ -66,21 +68,22 @@ class TestТрикроковийПідсумок:
         )
         assert result.split.total == GERMANY_TOTAL == 9
 
-    async def test_британія_дві_зони(self, magic):
+    async def test_британія_спільна_мова_без_мовної_складової(self, magic):
+        """Британія — англійська спільна: підсумок = зона + GEO, БЕЗ мови."""
         result = run_query(magic, country_query("gb"))
-        assert (result.split.zone, result.split.language, result.split.geo) == (
-            UK_ZONE,
-            UK_LANG,
-            UK_GEO,
-        )
-        assert result.split.total == UK_TOTAL == 5
+        assert result.split.show_language is False
+        assert result.split.zone == UK_ZONE
+        assert result.split.geo == UK_GEO
+        assert result.split.total == UK_TOTAL == 3  # 5 донорів мовою НЕ додано
+        assert result.core.count == UK_TOTAL
 
-    async def test_підсумок_це_сума_трьох(self, magic):
+    async def test_підсумок_це_сума_складових(self, magic):
         for code in ("fr", "de", "gb"):
             result = run_query(magic, country_query(code))
             s = result.split
-            assert s.total == s.zone + s.language + s.geo
-            assert result.core.count == s.total, "core рахується по об'єднанню трьох груп"
+            expected = s.zone + s.geo + (s.language if s.show_language else 0)
+            assert s.total == expected
+            assert result.core.count == s.total, "core рахується по об'єднанню груп підсумку"
 
 
 class TestБезПодвійногоРахунку:
@@ -202,6 +205,50 @@ class TestОстаннійРядок:
         result = run_query(magic, country_query("de", dr_min=100))
         assert result.core.count == 0
         assert result.addendum is None
+
+
+class TestСпільніМовиНеВПідсумку:
+    """en/es/pt/ar: мова-на-нейтральних у підсумок НЕ входить (окремим рядком)."""
+
+    async def test_британія_підсумок_без_мови(self, magic):
+        result = run_query(magic, country_query("gb"))
+        assert result.split.total == UK_TOTAL == 3  # зона 3 + GEO 0; мова НЕ додана
+        assert result.split.show_language is False
+
+    async def test_нейтральний_рядок_окремо_від_підсумку(self, magic):
+        result = run_query(magic, country_query("gb"))
+        assert result.neutral_offer is not None
+        assert result.neutral_offer.count == UK_NEUTRAL == 2  # glob3.com, glob4.org
+        assert result.core.count == UK_TOTAL, "нейтральні в підсумок не входять"
+
+    async def test_нейтральний_рядок_без_подвійного_показу(self, magic):
+        """Донори нейтрального рядка не перетинаються з підсумком (зона+GEO)."""
+        from app.analytics.engine import classify_country
+
+        zone_d, lang_global_d, geo_d, _ = classify_country(magic, country_query("gb"))
+        in_total = {id(d) for d in zone_d + geo_d}  # для спільної мови це весь підсумок
+        assert all(id(d) not in in_total for d in lang_global_d)
+
+    async def test_geo_донор_іде_в_підсумок_а_не_в_нейтральний(self, magic):
+        """.com-донор мовою з GEO країни → GEO (підсумок), не нейтральний рядок."""
+        from app.analytics.engine import classify_country
+        from app.data.models import Dataset, Donor
+
+        donors = (Donor("x.com", ".com", "english", None, None, geo_code="gb", geo_traffic=500.0),)
+        ds = Dataset("magic", "Меджик", "Меджик", donors, 0.0, tracks_geo=True)
+        _zone_d, lang_global_d, geo_d, _ = classify_country(ds, country_query("gb"))
+        assert len(geo_d) == 1, "GEO має пріоритет над мовою"
+        assert lang_global_d == []
+
+    async def test_іспанія_теж_спільна(self, magic):
+        result = run_query(magic, country_query("es"))
+        assert result.split.total == SPAIN_TOTAL == 1
+        assert result.split.show_language is False
+        assert result.neutral_offer.count == SPAIN_NEUTRAL == 1  # glob5.online
+
+    async def test_однозначна_мова_без_нейтрального_рядка(self, magic):
+        assert run_query(magic, country_query("de")).neutral_offer is None
+        assert run_query(magic, country_query("fr")).neutral_offer is None
 
 
 class TestПопередженняПроСпільніМови:

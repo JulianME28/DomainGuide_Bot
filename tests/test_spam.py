@@ -311,7 +311,9 @@ class TestКартка:
 
     async def test_похибка_і_для_морд(self, mordy):
         card = render_result(run_query(mordy, mordy_query()))
-        assert "до 30%" in card
+        # Новий однорядковий формат похибки — однаковий для всіх баз.
+        assert "допустима похибка 30%" in card
+        assert "з урахуванням похибки" in card
 
     def test_невизначена_заспамленість_у_картці(self):
         """Якщо в усіх донорів 0 вихідних — чесно кажемо, що % не порахувати."""
