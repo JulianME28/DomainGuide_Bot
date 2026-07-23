@@ -45,12 +45,13 @@ class Dimension(StrEnum):
     LANGUAGE = "language"
     TRAFFIC = "traffic"
     DR = "dr"
-
-    # Виміри, для яких у таблиці ще немає колонок. Розбір тексту вже вміє
-    # їх упізнавати, щоб фрази на кшталт «будь-які вихідні лінки» не
-    # заважали сусіднім фільтрам. У запит вони поки не потрапляють.
     OUTLINKS = "outlinks"
     SPAM = "spam"
+
+    GEO = "geo"
+    """Фільтр по колонці GEO (країна ПОХОДЖЕННЯ ТРАФІКУ), незалежно від зони.
+    Не плутати з COUNTRY: країна визначається за доменною зоною + мовою, а GEO —
+    це окрема колонка «(cc, N)»."""
 
 
 # Назви вимірів у знахідному відмінку — для кнопок «❌ Прибрати мову».
@@ -61,6 +62,7 @@ DIMENSION_ACCUSATIVE: dict[str, str] = {
     Dimension.DR: "DR",
     Dimension.OUTLINKS: "вихідні лінки",
     Dimension.SPAM: "заспамленість",
+    Dimension.GEO: "гео",
 }
 
 
@@ -75,6 +77,10 @@ class DonorQuery:
     language: Language | None = None
     zones: tuple[str, ...] = ()
     """Явно вказані зони — коли користувач написав «.com», а не назву країни."""
+
+    geo: Country | None = None
+    """Фільтр по колонці GEO: країна ПОХОДЖЕННЯ ТРАФІКУ (з N>0), незалежно від
+    доменної зони й мови. «гео Польща» = донори, у яких GEO — Польща."""
 
     countries: tuple[Country, ...] = ()
     """СПИСОК країн для запиту «по кількох країнах одразу». Коли тут ≥2 країн,
@@ -139,8 +145,10 @@ class DonorQuery:
 
     @property
     def is_empty(self) -> bool:
-        """Запит без жодного фільтра — просто «скільки всього донорів»."""
-        return self.kind is QueryKind.METRICS and not self.has_metric_filters
+        """Запит без жодного фільтра — просто «скільки всього донорів».
+
+        GEO-фільтр теж вважається фільтром: запит «гео Польща» не порожній."""
+        return self.kind is QueryKind.METRICS and not self.has_metric_filters and self.geo is None
 
     @property
     def filled_dimensions(self) -> frozenset[str]:
@@ -158,6 +166,8 @@ class DonorQuery:
             filled.add(Dimension.OUTLINKS)
         if self.spam_min is not None or self.spam_max is not None:
             filled.add(Dimension.SPAM)
+        if self.geo is not None:
+            filled.add(Dimension.GEO)
         return frozenset(filled)
 
     @property
@@ -189,6 +199,8 @@ class DonorQuery:
             return self.replace(outlinks_min=None, outlinks_max=None)
         if dimension == Dimension.SPAM:
             return self.replace(spam_min=None, spam_max=None)
+        if dimension == Dimension.GEO:
+            return self.replace(geo=None)
         return self
 
     # -- що саме фільтруємо --------------------------------------------------
@@ -235,6 +247,10 @@ class DonorQuery:
             parts.append(f"мова {self.language.name_uk}")
         if not self.country and self.zones:
             parts.append(f"зона {', '.join(self.zones)}")
+        # GEO — окремий фільтр по колонці трафіку. Підпис «гео», щоб не сплутати
+        # з доменною зоною країни.
+        if self.geo:
+            parts.append(f"гео {self.geo.name_uk}")
 
         parts.append(_describe_range("трафік", self.traffic_min, self.traffic_max))
         parts.append(_describe_range("DR", self.dr_min, self.dr_max))

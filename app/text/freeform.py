@@ -46,8 +46,52 @@ from dataclasses import dataclass
 
 from app.analytics.query import Dimension, DonorQuery
 from app.dictionary.normalize import normalize_text
-from app.dictionary.resolver import find_all_countries, scan_entities
+from app.dictionary.resolver import find_all_countries, find_country_match, scan_entities
 from app.text.dimensions import SPECS, active_dimensions, resolve_dimensions
+
+# Модифікатори GEO-фільтра: після них іде НАЗВА КРАЇНИ походження трафіку.
+# «гео Польща», «geo Poland», «за гео Німеччина», «трафік з Польщі».
+_GEO_MODIFIER = re.compile(r"\b(?:за\s+гео|гео|geo|трафік\w*\s+з|трафік\w*\s+із)\b")
+
+# Скасування GEO-фільтра: «гео не важливо», «без гео», «гео будь-яке».
+_GEO_CANCEL = re.compile(
+    r"\b(?:без\s+(?:урахування\s+)?гео"
+    r"|гео\s+(?:не\s+важлив\w*|неважлив\w*|будь[-\s]?як\w*|не\s+має\s+значен\w*))\b"
+)
+
+
+def _mask(text: str, start: int, end: int) -> str:
+    return text[:start] + " " * (end - start) + text[end:]
+
+
+def _extract_geo(text: str) -> tuple[object, bool, str]:
+    """Витягує GEO-фільтр із нормалізованого тексту.
+
+    Повертає (країна GEO або None, чи скасовано, текст без GEO-фрази). Країну
+    після модифікатора затираємо разом із модифікатором — щоб «Польща» в «гео
+    Польща» не сприйнялася ще й як звичайний країновий запит.
+    """
+    cancelled = False
+    for match in list(_GEO_CANCEL.finditer(text)):
+        text = _mask(text, match.start(), match.end())
+        cancelled = True
+
+    geo_country = None
+    modifier = _GEO_MODIFIER.search(text)
+    if modifier is not None:
+        raw_tail = text[modifier.end() :]
+        stripped = raw_tail.lstrip()
+        # find_country_match всередині нормалізує (стягує пробіли), тому щоб
+        # позиції збіглися, шукаємо в уже обрізаному зліва «хвості».
+        offset = modifier.end() + (len(raw_tail) - len(stripped))
+        head = stripped.split(",", 1)[0]
+        found = find_country_match(head, allow_short=False)
+        if found is not None:
+            geo_country = found[0]
+            text = _mask(text, modifier.start(), offset + found[1].end)
+
+    return geo_country, cancelled, text
+
 
 # Як користувач може назвати кожну базу.
 _SECTION_WORDS: dict[str, tuple[str, ...]] = {
@@ -65,6 +109,7 @@ _STRUCTURAL_STOPWORDS = frozenset(
         "for", "list", "донори", "донор", "донора", "донорів", "донорам", "донорами",
         "покажи", "показати", "скільки", "дай", "знайди", "знайти", "хочу", "треба",
         "потрібно", "база", "базі", "бази", "усі", "усіх", "все", "всі", "всіх",
+        "гео", "geo",  # лишок модифікатора GEO, якщо країну після нього не впізнали
     }
 )  # fmt: skip
 _ALL_SECTION_WORDS = frozenset(word for words in _SECTION_WORDS.values() for word in words)
@@ -137,6 +182,11 @@ def parse_free_text(text: str, *, default_section: str = "magic") -> ParsedQuery
     normalized = normalize_text(text)
     section, section_named = detect_section(text, default_section)
 
+    # Крок 0: GEO-фільтр («гео Польща»). Витягуємо ПЕРШИМ і затираємо, щоб
+    # країна після «гео» не сприйнялася ще й як звичайний країновий запит.
+    geo_country, geo_cancelled, normalized = _extract_geo(normalized)
+    geo = None if geo_cancelled else geo_country
+
     # Крок 1: спільний механізм. Повертає що знайдено по кожному виміру
     # і текст, з якого розібране вже прибрано.
     matches, remaining = resolve_dimensions(normalized)
@@ -175,6 +225,7 @@ def parse_free_text(text: str, *, default_section: str = "magic") -> ParsedQuery
             multi_query = DonorQuery(
                 section_key=section,
                 countries=tuple(countries_all),
+                geo=geo,
                 unrecognized=unrecognized,
                 dr_min=dr_min,
                 dr_max=dr_max,
@@ -185,12 +236,15 @@ def parse_free_text(text: str, *, default_section: str = "magic") -> ParsedQuery
                 spam_min=spam_min,
                 spam_max=spam_max,
             )
+            multi_mentioned = {Dimension.COUNTRY} | metric_mentions
+            if geo_country is not None or geo_cancelled:
+                multi_mentioned.add(Dimension.GEO)
             return ParsedQuery(
                 query=multi_query,
                 understood=True,
                 section_named=section_named,
-                mentioned=frozenset({Dimension.COUNTRY} | metric_mentions),
-                cancelled=frozenset(cancelled),
+                mentioned=frozenset(multi_mentioned),
+                cancelled=frozenset(cancelled | ({Dimension.GEO} if geo_cancelled else set())),
                 unrecognized=unrecognized,
             )
 
@@ -198,6 +252,7 @@ def parse_free_text(text: str, *, default_section: str = "magic") -> ParsedQuery
         section_key=section,
         country=country,
         language=language,
+        geo=geo,
         # Явні глобальні зони («.com») теж є фільтром — але лише коли країни
         # не назвали, інакше вони суперечили б одна одній.
         zones=() if (country or cancelled_dimension(Dimension.COUNTRY)) else entities.global_zones,
@@ -220,6 +275,10 @@ def parse_free_text(text: str, *, default_section: str = "magic") -> ParsedQuery
         mentioned.add(Dimension.COUNTRY)
     if entities.language:
         mentioned.add(Dimension.LANGUAGE)
+    if geo_country is not None or geo_cancelled:
+        mentioned.add(Dimension.GEO)
+    if geo_cancelled:
+        cancelled.add(Dimension.GEO)
 
     # Скасування — теж зрозумілий намір, а не «нічого не зрозуміло».
     understood = bool(mentioned or section_named)

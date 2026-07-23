@@ -30,6 +30,7 @@ POPULAR_COUNTRIES = ("gb", "us", "de", "fr", "es", "it", "ca", "au", "pl", "nl",
 # Порядок кнопок «❌ Прибрати …» — сталий, щоб вони не стрибали між показами.
 DROP_ORDER = (
     Dimension.COUNTRY,
+    Dimension.GEO,
     Dimension.LANGUAGE,
     Dimension.TRAFFIC,
     Dimension.DR,
@@ -142,14 +143,26 @@ def wizard_countries() -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
-def wizard_traffic() -> InlineKeyboardMarkup:
-    """Крок 3: трафік."""
+def wizard_geo() -> InlineKeyboardMarkup:
+    """Крок «ГЕО (країна трафіку)» — фільтр по колонці GEO.
+
+    Країну вводять текстом (як на кроці країни), а тут — лише «не важливо»
+    й навігація. GEO є в обох базах, тож крок показуємо для обох."""
+    builder = InlineKeyboardBuilder()
+    builder.button(text="Не важливо", callback_data="wizard:geo:any")
+    _add_navigation(builder, back="wizard:back:country")
+    builder.adjust(1, 3)
+    return builder.as_markup()
+
+
+def wizard_traffic(*, back: str = "country") -> InlineKeyboardMarkup:
+    """Крок 3: трафік. back — попередній крок (для баз із GEO це «geo»)."""
     builder = InlineKeyboardBuilder()
     builder.button(text="Не важливо", callback_data="wizard:traffic:any")
     for value in TRAFFIC_OPTIONS:
         builder.button(text=f"Від {value}", callback_data=f"wizard:traffic:{value}")
     builder.button(text="✍️ Ввести вручну", callback_data="wizard:traffic:manual")
-    _add_navigation(builder, back="wizard:back:country")
+    _add_navigation(builder, back=f"wizard:back:{back}")
     builder.adjust(3, 3, 1, 3)
     return builder.as_markup()
 

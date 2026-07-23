@@ -22,8 +22,10 @@ class Wizard(StatesGroup):
     """Кроки майстер-запиту."""
 
     country = State()
-    """Крок «КРАЇНА» — саме так, а не «гео»: у даних немає поля гео,
-    і питати треба те, на що бот справді може відповісти."""
+    """Крок «КРАЇНА» — визначається за доменною зоною."""
+
+    geo = State()
+    """Крок «ГЕО (країна трафіку)» — фільтр по колонці GEO, окремо від країни."""
 
     traffic = State()
     dr = State()
@@ -76,6 +78,7 @@ def query_to_state(query: DonorQuery, fresh: frozenset[str] | None = None) -> di
         "section_key": query.section_key,
         "country_code": query.country.code if query.country else None,
         "language_code": query.language.code if query.language else None,
+        "geo_code": query.geo.code if query.geo else None,
         "zones": list(query.zones),
         "dr_min": query.dr_min,
         "dr_max": query.dr_max,
@@ -93,10 +96,13 @@ def query_from_state(data: dict[str, Any], *, default_section: str = "magic") ->
     country_code = data.get("country_code")
     language_code = data.get("language_code")
 
+    geo_code = data.get("geo_code")
+
     return DonorQuery(
         section_key=data.get("section_key") or default_section,
         country=country_by_code(country_code) if country_code else None,
         language=language_by_code(language_code) if language_code else None,
+        geo=country_by_code(geo_code) if geo_code else None,
         zones=tuple(data.get("zones") or ()),
         dr_min=data.get("dr_min"),
         dr_max=data.get("dr_max"),
@@ -128,6 +134,7 @@ def summary_lines(
     fresh: frozenset[str] = frozenset(),
     *,
     tracks_spam: bool = False,
+    tracks_geo: bool = False,
 ) -> str:
     """Резюме фільтрів перед запуском (ТЗ, розділ 30).
 
@@ -152,14 +159,23 @@ def summary_lines(
     country = query.country.name_uk if query.country else "не обрано"
     language = query.language.name_uk if query.language else "не обрано"
 
+    geo_name = query.geo.name_uk if query.geo else "не важливо"
+
     lines = [
         "<b>Перевірте параметри запиту:</b>",
         "",
         f"🗂 <b>База:</b> {section_title}",
         f"🌍 <b>Країна:</b> {country}{mark(Dimension.COUNTRY)}",
-        f"📊 <b>Трафік:</b> {limit(query.traffic_min, query.traffic_max)}{mark(Dimension.TRAFFIC)}",
-        f"📈 <b>DR:</b> {limit(query.dr_min, query.dr_max)}{mark(Dimension.DR)}",
     ]
+
+    # ГЕО (країна трафіку) — окремий фільтр по колонці GEO, лише для баз із нею.
+    if tracks_geo:
+        lines.append(f"🌐 <b>Гео (країна трафіку):</b> {geo_name}{mark(Dimension.GEO)}")
+
+    lines.append(
+        f"📊 <b>Трафік:</b> {limit(query.traffic_min, query.traffic_max)}{mark(Dimension.TRAFFIC)}"
+    )
+    lines.append(f"📈 <b>DR:</b> {limit(query.dr_min, query.dr_max)}{mark(Dimension.DR)}")
 
     # Вихідні лінки й заспамленість — лише для баз, які мають ці колонки.
     if tracks_spam:

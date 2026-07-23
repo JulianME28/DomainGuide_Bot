@@ -505,6 +505,65 @@ class TestМайстерВихідніІСпам:
         await _after_outlinks(FakeMessage(), services, state)
         assert state.current_state == Wizard.spam
 
+
+class TestМайстерGEO:
+    """Крок «ГЕО (країна трафіку)» — для баз із колонкою GEO (зараз обидві)."""
+
+    async def test_крок_гео_для_обох_баз(self, services):
+        """Після країни — крок гео і для «Меджика», і для «Морд»."""
+        from app.bot.handlers.wizard import _after_country
+
+        for section_key in ("magic", "mordy"):
+            state = FakeState({"section_key": section_key})
+            await _after_country(FakeMessage(), services, state)
+            assert state.current_state == Wizard.geo, section_key
+
+    async def test_гео_текстом_потрапляє_у_фільтр(self, services):
+        """Назву країни на кроці гео записуємо як GEO-фільтр і йдемо до трафіку."""
+        from app.bot.handlers.wizard import type_geo
+
+        state = FakeState({"section_key": "magic"})
+        await type_geo(FakeMessage(text="Польща"), state)
+        assert state._data["geo_code"] == "pl"
+        assert state.current_state == Wizard.traffic
+
+    async def test_не_важливо_знімає_гео(self, services):
+        from app.bot.handlers.wizard import skip_geo
+
+        state = FakeState({"section_key": "magic", "geo_code": "pl"})
+        await skip_geo(FakeCallback("wizard:geo:any"), state)
+        assert state._data["geo_code"] is None
+        assert state.current_state == Wizard.traffic
+
+    async def test_гео_у_резюме_з_кнопкою_прибрати(self, services):
+        """GEO-фільтр видно в резюме, і його можна прибрати кнопкою."""
+        from app.bot.handlers.wizard import _goto_confirm
+
+        message = FakeMessage()
+        state = FakeState({"section_key": "magic", "geo_code": "pl", FRESH_KEY: []})
+        await _goto_confirm(message, services, state)
+        text, markup = message.answers[-1]
+        assert "Гео (країна трафіку)" in text and "Польща" in text
+        assert "wizard:drop:geo" in _callback_data(markup)
+
+    async def test_прибрати_гео_знімає_лише_гео(self, services):
+        from app.bot.handlers.wizard import drop_dimension
+
+        state = FakeState({"section_key": "magic", "geo_code": "pl", "dr_min": 30, FRESH_KEY: []})
+        await drop_dimension(FakeCallback("wizard:drop:geo"), services, state)
+        assert state._data["geo_code"] is None
+        assert state._data["dr_min"] == 30, "DR чіпати не мали"
+
+    async def test_назад_із_трафіку_веде_на_гео(self, services):
+        """Для баз із GEO «Назад» із трафіку веде на крок гео, не на країну."""
+        from app.bot.handlers.wizard import _goto_traffic
+
+        message = FakeMessage()
+        state = FakeState({"section_key": "magic"})
+        await _goto_traffic(message, state, back="geo")
+        _text, markup = message.answers[-1]
+        assert "wizard:back:geo" in _callback_data(markup)
+
     async def test_обране_значення_потрапляє_у_фільтр(self, services):
         """Кнопка «Від 25» задає outlinks_min і веде далі на спам."""
         from app.bot.handlers.wizard import pick_outlinks, pick_spam

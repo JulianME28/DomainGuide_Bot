@@ -28,6 +28,7 @@ from app.bot.keyboards import (
     wizard_confirm,
     wizard_countries,
     wizard_dr,
+    wizard_geo,
     wizard_outlinks,
     wizard_sections,
     wizard_spam,
@@ -54,6 +55,14 @@ STEP_COUNTRY = (
     "<code>Germany</code>) або доменну зону (<code>.de</code>).\n\n"
     "<i>Країна визначається за доменною зоною. Мовний зріз бот додасть "
     "окремим рядком у відповіді.</i>"
+)
+
+STEP_GEO = (
+    "🌐 <b>Гео (країна трафіку)</b>\n\n"
+    "Фільтр по колонці GEO — країна, ЗВІДКИ йде трафік (не доменна зона). "
+    "Напишіть країну (<code>Польща</code>, <code>Poland</code>) або натисніть "
+    "«Не важливо».\n\n"
+    "<i>Це окремо від кроку «Країна»: там — доменна зона, тут — походження трафіку.</i>"
 )
 
 STEP_TRAFFIC = "📊 <b>Фільтр по трафіку</b>\n\nОберіть варіант або напишіть число."
@@ -86,9 +95,32 @@ async def _goto_country(target: CallbackQuery | Message, state: FSMContext) -> N
     await _show(target, STEP_COUNTRY, wizard_countries())
 
 
-async def _goto_traffic(target: CallbackQuery | Message, state: FSMContext) -> None:
+async def _goto_geo(target: CallbackQuery | Message, state: FSMContext) -> None:
+    await state.set_state(Wizard.geo)
+    await _show(target, STEP_GEO, wizard_geo())
+
+
+async def _goto_traffic(
+    target: CallbackQuery | Message, state: FSMContext, *, back: str = "country"
+) -> None:
     await state.set_state(Wizard.traffic)
-    await _show(target, STEP_TRAFFIC, wizard_traffic())
+    await _show(target, STEP_TRAFFIC, wizard_traffic(back=back))
+
+
+async def _after_country(
+    target: CallbackQuery | Message, services: BotServices, state: FSMContext
+) -> None:
+    """Після країни: для баз із колонкою GEO — крок гео, інакше одразу трафік."""
+    section = await _section_of(services, state)
+    if section.has_geo:
+        await _goto_geo(target, state)
+    else:
+        await _goto_traffic(target, state, back="country")
+
+
+def _traffic_back(section) -> str:
+    """Куди веде «Назад» із кроку трафіку: на гео (якщо є) чи на країну."""
+    return "geo" if section.has_geo else "country"
 
 
 async def _goto_dr(target: CallbackQuery | Message, state: FSMContext) -> None:
@@ -166,6 +198,7 @@ async def _goto_confirm(
         services.section_title(query.section_key),
         fresh,
         tracks_spam=section.tracks_spam,
+        tracks_geo=section.has_geo,
     )
     # «Назад» веде на останній крок перед резюме: для «Морд» це заспамленість,
     # для «Меджика» — DR (кроків спаму/вихідних там немає).
@@ -247,8 +280,10 @@ async def go_back(callback: CallbackQuery, services: BotServices, state: FSMCont
     step = callback.data.split(":")[2]
     if step == "country":
         await _goto_country(callback, state)
+    elif step == "geo":
+        await _goto_geo(callback, state)
     elif step == "traffic":
-        await _goto_traffic(callback, state)
+        await _goto_traffic(callback, state, back=_traffic_back(await _section_of(services, state)))
     elif step == "dr":
         await _goto_dr(callback, state)
     elif step == "outlinks":
@@ -265,7 +300,7 @@ async def go_back(callback: CallbackQuery, services: BotServices, state: FSMCont
 
 
 @router.callback_query(F.data.startswith("wizard:country:"))
-async def pick_country(callback: CallbackQuery, state: FSMContext) -> None:
+async def pick_country(callback: CallbackQuery, services: BotServices, state: FSMContext) -> None:
     choice = callback.data.split(":")[2]
 
     if choice == "manual":
@@ -283,7 +318,7 @@ async def pick_country(callback: CallbackQuery, state: FSMContext) -> None:
         # інакше вийшло б, що людина пропустила крок, а фільтр лишився.
         await state.update_data(country_code=None, zones=[])
         await _mark_fresh(state, Dimension.COUNTRY)
-        await _goto_traffic(callback, state)
+        await _after_country(callback, services, state)
         return
 
     country = country_by_code(choice)
@@ -293,11 +328,11 @@ async def pick_country(callback: CallbackQuery, state: FSMContext) -> None:
 
     await state.update_data(country_code=country.code, zones=[])
     await _mark_fresh(state, Dimension.COUNTRY)
-    await _goto_traffic(callback, state)
+    await _after_country(callback, services, state)
 
 
 @router.message(Wizard.country)
-async def type_country(message: Message, state: FSMContext) -> None:
+async def type_country(message: Message, services: BotServices, state: FSMContext) -> None:
     """Країна, написана текстом просто на кроці вибору."""
     text = message.text or ""
 
@@ -311,7 +346,7 @@ async def type_country(message: Message, state: FSMContext) -> None:
             f"({entities.language.name_uk}).\n"
             "Країну можна обрати кнопкою або пропустити."
         )
-        await _goto_traffic(message, state)
+        await _after_country(message, services, state)
         return
 
     found = find_country_match(text, allow_short=True)
@@ -325,7 +360,37 @@ async def type_country(message: Message, state: FSMContext) -> None:
 
     await state.update_data(country_code=found[0].code, zones=[])
     await _mark_fresh(state, Dimension.COUNTRY)
-    await _goto_traffic(message, state)
+    await _after_country(message, services, state)
+
+
+# ---------------------------------------------------------------------------
+# Крок «ГЕО (країна трафіку)» — фільтр по колонці GEO, для баз із цією колонкою
+# ---------------------------------------------------------------------------
+
+
+@router.callback_query(F.data == "wizard:geo:any")
+async def skip_geo(callback: CallbackQuery, state: FSMContext) -> None:
+    """«Не важливо» на кроці гео — знімаємо GEO-фільтр і йдемо до трафіку."""
+    await state.update_data(geo_code=None)
+    await _mark_fresh(state, Dimension.GEO)
+    await _goto_traffic(callback, state, back="geo")
+
+
+@router.message(Wizard.geo)
+async def type_geo(message: Message, state: FSMContext) -> None:
+    """Країна ПОХОДЖЕННЯ ТРАФІКУ, написана текстом на кроці гео."""
+    found = find_country_match(message.text or "", allow_short=True)
+    if found is None:
+        await message.answer(
+            "Не впізнав країну. Напишіть інакше: <code>Польща</code>, "
+            "<code>Poland</code>, або натисніть «Не важливо».",
+            reply_markup=wizard_geo(),
+        )
+        return
+
+    await state.update_data(geo_code=found[0].code)
+    await _mark_fresh(state, Dimension.GEO)
+    await _goto_traffic(message, state, back="geo")
 
 
 # ---------------------------------------------------------------------------

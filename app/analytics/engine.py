@@ -292,6 +292,10 @@ def passes_metrics(donor: Donor, query: DonorQuery) -> bool:
     при заданому фільтрі не проходить — так само, як донор без DR не
     проходить фільтр по DR.
     """
+    if query.geo is not None and not (donor.geo_code == query.geo.code and donor.has_measured_geo):
+        # Фільтр по колонці GEO: країна походження трафіку з N>0. GEO=0 або
+        # інша країна — не проходить, незалежно від доменної зони й мови.
+        return False
     return (
         _in_range(donor.dr, query.dr_min, query.dr_max)
         and _in_range(donor.traffic, query.traffic_min, query.traffic_max)
@@ -598,6 +602,10 @@ def normalize_query(dataset: Dataset, query: DonorQuery) -> DonorQuery:
     Тому для баз без заспамленості ці виміри просто ігноруються: у «Меджику»
     аналіз заспамленості не має сенсу й у картці не з'являється.
     """
+    # GEO-фільтр має сенс лише там, де є колонка GEO. Для баз без неї знімаємо
+    # його, інакше фільтр по порожньому GEO відсіяв би всіх (хибний нуль).
+    if not dataset.tracks_geo:
+        query = query.without(Dimension.GEO)
     if dataset.tracks_spam:
         return query
     return query.without(Dimension.OUTLINKS).without(Dimension.SPAM)
