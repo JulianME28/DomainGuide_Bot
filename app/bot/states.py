@@ -27,6 +27,12 @@ class Wizard(StatesGroup):
 
     traffic = State()
     dr = State()
+    outlinks = State()
+    """Крок «Вихідні лінки» — лише для баз із цією колонкою («Морди»)."""
+
+    spam = State()
+    """Крок «Заспамленість» (у кількості заспамлених лінків) — лише «Морди»."""
+
     language = State()
     confirm = State()
 
@@ -75,6 +81,10 @@ def query_to_state(query: DonorQuery, fresh: frozenset[str] | None = None) -> di
         "dr_max": query.dr_max,
         "traffic_min": query.traffic_min,
         "traffic_max": query.traffic_max,
+        "outlinks_min": query.outlinks_min,
+        "outlinks_max": query.outlinks_max,
+        "spam_min": query.spam_min,
+        "spam_max": query.spam_max,
     }
 
 
@@ -92,6 +102,10 @@ def query_from_state(data: dict[str, Any], *, default_section: str = "magic") ->
         dr_max=data.get("dr_max"),
         traffic_min=data.get("traffic_min"),
         traffic_max=data.get("traffic_max"),
+        outlinks_min=data.get("outlinks_min"),
+        outlinks_max=data.get("outlinks_max"),
+        spam_min=data.get("spam_min"),
+        spam_max=data.get("spam_max"),
     )
 
 
@@ -112,6 +126,8 @@ def summary_lines(
     query: DonorQuery,
     section_title: str,
     fresh: frozenset[str] = frozenset(),
+    *,
+    tracks_spam: bool = False,
 ) -> str:
     """Резюме фільтрів перед запуском (ТЗ, розділ 30).
 
@@ -143,8 +159,20 @@ def summary_lines(
         f"🌍 <b>Країна:</b> {country}{mark(Dimension.COUNTRY)}",
         f"📊 <b>Трафік:</b> {limit(query.traffic_min, query.traffic_max)}{mark(Dimension.TRAFFIC)}",
         f"📈 <b>DR:</b> {limit(query.dr_min, query.dr_max)}{mark(Dimension.DR)}",
-        f"🗣 <b>Мова:</b> {language}{mark(Dimension.LANGUAGE)}",
     ]
+
+    # Вихідні лінки й заспамленість — лише для баз, які мають ці колонки.
+    if tracks_spam:
+        lines.append(
+            f"🔗 <b>Вихідні лінки:</b> "
+            f"{limit(query.outlinks_min, query.outlinks_max)}{mark(Dimension.OUTLINKS)}"
+        )
+        lines.append(
+            f"🧪 <b>Заспамленість:</b> "
+            f"{limit(query.spam_min, query.spam_max)}{mark(Dimension.SPAM)}"
+        )
+
+    lines.append(f"🗣 <b>Мова:</b> {language}{mark(Dimension.LANGUAGE)}")
 
     if inherited:
         lines.append("")

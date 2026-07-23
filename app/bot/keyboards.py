@@ -28,11 +28,22 @@ from app.dictionary.countries import country_by_code
 POPULAR_COUNTRIES = ("gb", "us", "de", "fr", "es", "it", "ca", "au", "pl", "nl", "br", "tr")
 
 # Порядок кнопок «❌ Прибрати …» — сталий, щоб вони не стрибали між показами.
-DROP_ORDER = (Dimension.COUNTRY, Dimension.LANGUAGE, Dimension.TRAFFIC, Dimension.DR)
+DROP_ORDER = (
+    Dimension.COUNTRY,
+    Dimension.LANGUAGE,
+    Dimension.TRAFFIC,
+    Dimension.DR,
+    Dimension.OUTLINKS,
+    Dimension.SPAM,
+)
 
-# Швидкі варіанти для метрик у майстрі.
+# Швидкі варіанти для метрик у майстрі. Усі — пороги «від N».
 TRAFFIC_OPTIONS = (1, 10, 50, 100, 500)
 DR_OPTIONS = (10, 20, 30, 40, 50)
+# Вихідні лінки й заспамленість — під реальний розподіл «Морд» (медіана
+# вихідних 5, заспамлених 2; база сильно скошена вліво).
+OUTLINKS_OPTIONS = (10, 25, 50, 100)
+SPAM_OPTIONS = (5, 20, 50, 100)
 
 
 def main_menu(*, is_admin: bool = False) -> InlineKeyboardMarkup:
@@ -155,12 +166,42 @@ def wizard_dr() -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
-def wizard_confirm(droppable: Iterable[str] = ()) -> InlineKeyboardMarkup:
+def wizard_outlinks() -> InlineKeyboardMarkup:
+    """Крок «Вихідні лінки» — лише для баз із цією колонкою («Морди»).
+
+    Механіка як у трафіку/DR: пороги «від N» плюс «не важливо».
+    """
+    builder = InlineKeyboardBuilder()
+    builder.button(text="Не важливо", callback_data="wizard:outlinks:any")
+    for value in OUTLINKS_OPTIONS:
+        builder.button(text=f"Від {value}", callback_data=f"wizard:outlinks:{value}")
+    builder.button(text="✍️ Ввести вручну", callback_data="wizard:outlinks:manual")
+    _add_navigation(builder, back="wizard:back:dr")
+    builder.adjust(3, 2, 1, 3)
+    return builder.as_markup()
+
+
+def wizard_spam() -> InlineKeyboardMarkup:
+    """Крок «Заспамленість» — у КІЛЬКОСТІ заспамлених лінків, лише «Морди»."""
+    builder = InlineKeyboardBuilder()
+    builder.button(text="Не важливо", callback_data="wizard:spam:any")
+    for value in SPAM_OPTIONS:
+        builder.button(text=f"Від {value}", callback_data=f"wizard:spam:{value}")
+    builder.button(text="✍️ Ввести вручну", callback_data="wizard:spam:manual")
+    _add_navigation(builder, back="wizard:back:outlinks")
+    builder.adjust(3, 2, 1, 3)
+    return builder.as_markup()
+
+
+def wizard_confirm(droppable: Iterable[str] = (), *, back: str = "dr") -> InlineKeyboardMarkup:
     """Крок 5: резюме перед запуском (ТЗ, розділ 30).
 
     droppable — виміри, які лишилися з попереднього запиту. Для кожного
     з'являється своя кнопка «❌ Прибрати …», щоб зайвий фільтр знімався
     одним дотиком, а не через повне скидання всього запиту.
+
+    back — крок, на який веде «Назад». Для «Морд» це «spam» (останній перед
+    резюме), для «Меджика» — «dr» (кроків спаму/вихідних там немає).
     """
     builder = InlineKeyboardBuilder()
     builder.button(text="▶️ Запустити перевірку", callback_data="wizard:run")
@@ -173,7 +214,7 @@ def wizard_confirm(droppable: Iterable[str] = ()) -> InlineKeyboardMarkup:
             drop_buttons += 1
 
     builder.button(text="🗣 Додати мову", callback_data="wizard:addlang")
-    builder.button(text="⬅️ Назад", callback_data="wizard:back:dr")
+    builder.button(text="⬅️ Назад", callback_data=f"wizard:back:{back}")
     builder.button(text="🔄 Скинути все", callback_data="wizard:reset")
 
     # Кнопки скидання йдуть по одній у рядок — так їх важче натиснути випадково.

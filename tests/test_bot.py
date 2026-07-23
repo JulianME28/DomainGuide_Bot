@@ -17,10 +17,12 @@ from app.bot.keyboards import (
     wizard_confirm,
     wizard_countries,
     wizard_dr,
+    wizard_outlinks,
+    wizard_spam,
     wizard_traffic,
 )
 from app.bot.middlewares import AccessMiddleware, RateLimitMiddleware
-from app.bot.states import query_from_state, query_to_state, summary_lines
+from app.bot.states import FRESH_KEY, Wizard, query_from_state, query_to_state, summary_lines
 from app.dictionary.countries import country_by_code
 from app.dictionary.languages import language_by_code
 from app.settings import Settings
@@ -88,8 +90,10 @@ class FakeCallback:
         self.from_user = FakeUser(user_id)
         self.answers: list[tuple] = []
 
-    async def answer(self, text=None, show_alert: bool = False):
-        self.answers.append((text, show_alert))
+    async def answer(self, text=None, show_alert: bool = False, reply_markup=None):
+        # reply_markup приймаємо, бо wizard-хелпери можуть показувати крок
+        # через цей самий об'єкт (у бою це робить окремий шлях для Message).
+        self.answers.append((text, reply_markup if reply_markup is not None else show_alert))
 
 
 class FakeState:
@@ -455,4 +459,110 @@ class TestПідказкаПереплутаногоРежиму:
         )
         for markup in markups:
             for code in _callback_data(markup):
+                assert len(code.encode("utf-8")) <= 64
+
+
+class TestМайстерВихідніІСпам:
+    """Нові кроки майстра «Вихідні лінки» й «Заспамленість» — лише для баз,
+    які мають ці колонки («Морди»), і з тією ж механікою, що трафік/DR."""
+
+    async def test_кроки_зявляються_для_мордів(self, services):
+        """Після DR «Морди» йдуть на крок вихідних лінків."""
+        from app.bot.handlers.wizard import _after_dr
+
+        state = FakeState({"section_key": "mordy"})
+        await _after_dr(FakeMessage(), services, state)
+        assert state.current_state == Wizard.outlinks
+
+    async def test_кроків_немає_для_меджика(self, services):
+        """У «Меджика» цих колонок немає — після DR одразу резюме."""
+        from app.bot.handlers.wizard import _after_dr
+
+        state = FakeState({"section_key": "magic"})
+        await _after_dr(FakeMessage(), services, state)
+        assert state.current_state == Wizard.confirm
+
+    async def test_після_вихідних_іде_заспамленість(self, services):
+        from app.bot.handlers.wizard import _after_outlinks
+
+        state = FakeState({"section_key": "mordy"})
+        await _after_outlinks(FakeMessage(), services, state)
+        assert state.current_state == Wizard.spam
+
+    async def test_обране_значення_потрапляє_у_фільтр(self, services):
+        """Кнопка «Від 25» задає outlinks_min і веде далі на спам."""
+        from app.bot.handlers.wizard import pick_outlinks, pick_spam
+
+        state = FakeState({"section_key": "mordy"})
+        await pick_outlinks(FakeCallback("wizard:outlinks:25"), services, state)
+        assert state._data["outlinks_min"] == 25
+        assert state.current_state == Wizard.spam
+
+        await pick_spam(FakeCallback("wizard:spam:5"), services, state)
+        assert state._data["spam_min"] == 5
+        assert state.current_state == Wizard.confirm
+
+    async def test_не_важливо_знімає_фільтр(self, services):
+        from app.bot.handlers.wizard import pick_outlinks
+
+        state = FakeState({"section_key": "mordy", "outlinks_min": 50})
+        await pick_outlinks(FakeCallback("wizard:outlinks:any"), services, state)
+        assert state._data["outlinks_min"] is None
+        assert state._data["outlinks_max"] is None
+
+    async def test_текстом_теж_можна(self, services):
+        """Число текстом на кроці працює так само, як кнопка."""
+        from app.bot.handlers.wizard import type_spam
+
+        state = FakeState({"section_key": "mordy"})
+        await type_spam(FakeMessage(text="20"), services, state)
+        assert state._data["spam_min"] == 20
+        assert state.current_state == Wizard.confirm
+
+    def test_обране_значення_в_резюме_морд(self):
+        query = DonorQuery(section_key="mordy", outlinks_min=25, spam_min=5)
+        text = summary_lines(query, "Морди", tracks_spam=True)
+        assert "Вихідні лінки" in text and "від 25" in text
+        assert "Заспамленість" in text and "від 5" in text
+
+    def test_резюме_меджика_без_нових_рядків(self):
+        query = DonorQuery(section_key="magic", dr_min=30)
+        text = summary_lines(query, "Меджик", tracks_spam=False)
+        assert "Вихідні лінки" not in text
+        assert "Заспамленість" not in text
+
+    async def test_прибрати_вихідні_працює(self, services):
+        """Кнопка «❌ Прибрати вихідні лінки» знімає лише цей фільтр."""
+        from app.bot.handlers.wizard import drop_dimension
+
+        state = FakeState(
+            {"section_key": "mordy", "outlinks_min": 25, "spam_min": 5, FRESH_KEY: []}
+        )
+        await drop_dimension(FakeCallback("wizard:drop:outlinks"), services, state)
+        assert state._data["outlinks_min"] is None
+        assert state._data["spam_min"] == 5, "заспамленість чіпати не мали"
+
+    async def test_навігація_назад_не_ламає_стан(self, services):
+        from app.bot.handlers.wizard import go_back
+
+        state = FakeState({"section_key": "mordy"})
+        await go_back(FakeCallback("wizard:back:outlinks"), services, state)
+        assert state.current_state == Wizard.outlinks
+
+    async def test_резюме_морд_назад_веде_на_спам(self, services):
+        """Останній крок перед резюме для «Морд» — заспамленість."""
+        from app.bot.handlers.wizard import _goto_confirm
+
+        message = FakeMessage()
+        state = FakeState({"section_key": "mordy", FRESH_KEY: []})
+        await _goto_confirm(message, services, state)
+        _text, markup = message.answers[-1]
+        assert "wizard:back:spam" in _callback_data(markup)
+
+    def test_нові_клавіатури_мають_навігацію_і_ліміт(self):
+        for keyboard in (wizard_outlinks(), wizard_spam()):
+            data = str(keyboard)
+            assert "wizard:reset" in data, "має бути «Скинути»"
+            assert "wizard:back" in data, "має бути «Назад»"
+            for code in _callback_data(keyboard):
                 assert len(code.encode("utf-8")) <= 64

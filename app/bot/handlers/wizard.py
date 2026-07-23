@@ -28,7 +28,9 @@ from app.bot.keyboards import (
     wizard_confirm,
     wizard_countries,
     wizard_dr,
+    wizard_outlinks,
     wizard_sections,
+    wizard_spam,
     wizard_traffic,
 )
 from app.bot.states import (
@@ -47,16 +49,27 @@ from app.dictionary.resolver import find_country_match, resolve_language, scan_e
 router = Router(name="wizard")
 
 STEP_COUNTRY = (
-    "🌍 <b>Крок 1 з 3. Оберіть КРАЇНУ</b>\n\n"
+    "🌍 <b>Крок 1. Оберіть КРАЇНУ</b>\n\n"
     "Можна натиснути кнопку, написати назву (<code>Німеччина</code>, "
     "<code>Germany</code>) або доменну зону (<code>.de</code>).\n\n"
     "<i>Країна визначається за доменною зоною. Мовний зріз бот додасть "
     "окремим рядком у відповіді.</i>"
 )
 
-STEP_TRAFFIC = "📊 <b>Крок 2 з 3. Фільтр по трафіку</b>\n\nОберіть варіант або напишіть число."
+STEP_TRAFFIC = "📊 <b>Фільтр по трафіку</b>\n\nОберіть варіант або напишіть число."
 
-STEP_DR = "📈 <b>Крок 3 з 3. Фільтр по DR</b>\n\nОберіть варіант або напишіть число."
+STEP_DR = "📈 <b>Фільтр по DR</b>\n\nОберіть варіант або напишіть число."
+
+STEP_OUTLINKS = (
+    "🔗 <b>Фільтр по вихідних лінках</b>\n\n"
+    "Скільки щонайменше вихідних лінків. Оберіть варіант або напишіть число."
+)
+
+STEP_SPAM = (
+    "🧪 <b>Фільтр по заспамленості</b>\n\n"
+    "У <b>кількості</b> заспамлених лінків (не у відсотках). Оберіть варіант "
+    "або напишіть число."
+)
 
 
 async def _show(target: CallbackQuery | Message, text: str, markup: InlineKeyboardMarkup) -> None:
@@ -83,6 +96,48 @@ async def _goto_dr(target: CallbackQuery | Message, state: FSMContext) -> None:
     await _show(target, STEP_DR, wizard_dr())
 
 
+async def _goto_outlinks(target: CallbackQuery | Message, state: FSMContext) -> None:
+    await state.set_state(Wizard.outlinks)
+    await _show(target, STEP_OUTLINKS, wizard_outlinks())
+
+
+async def _goto_spam(target: CallbackQuery | Message, state: FSMContext) -> None:
+    await state.set_state(Wizard.spam)
+    await _show(target, STEP_SPAM, wizard_spam())
+
+
+async def _section_of(services: BotServices, state: FSMContext):
+    """Налаштування бази поточного запиту — щоб знати, чи має вона спам/вихідні."""
+    data = await state.get_data()
+    return services.columns.section(data.get("section_key", "magic"))
+
+
+async def _after_dr(
+    target: CallbackQuery | Message, services: BotServices, state: FSMContext
+) -> None:
+    """Після DR: для баз із вихідними лінками — крок вихідних, інакше резюме.
+
+    Саме тут ховаються кроки спаму/вихідних для «Меджика»: колонок немає —
+    майстер їх просто не показує й веде одразу до резюме.
+    """
+    section = await _section_of(services, state)
+    if section.has_outlinks:
+        await _goto_outlinks(target, state)
+    else:
+        await _goto_confirm(target, services, state)
+
+
+async def _after_outlinks(
+    target: CallbackQuery | Message, services: BotServices, state: FSMContext
+) -> None:
+    """Після вихідних: якщо база має ще й заспамленість — крок спаму, інакше резюме."""
+    section = await _section_of(services, state)
+    if section.tracks_spam:
+        await _goto_spam(target, state)
+    else:
+        await _goto_confirm(target, services, state)
+
+
 async def _mark_fresh(state: FSMContext, dimension: str) -> None:
     """Позначає вимір як заданий САМЕ ЗАРАЗ.
 
@@ -105,10 +160,19 @@ async def _goto_confirm(
     query = query_from_state(data)
     fresh = fresh_from_state(data)
 
-    text = summary_lines(query, services.section_title(query.section_key), fresh)
+    section = services.columns.section(query.section_key)
+    text = summary_lines(
+        query,
+        services.section_title(query.section_key),
+        fresh,
+        tracks_spam=section.tracks_spam,
+    )
+    # «Назад» веде на останній крок перед резюме: для «Морд» це заспамленість,
+    # для «Меджика» — DR (кроків спаму/вихідних там немає).
+    back = "spam" if section.tracks_spam else ("outlinks" if section.has_outlinks else "dr")
     # Кнопки скидання показуємо лише для успадкованих фільтрів: щойно
     # обране змінюють кнопкою «Назад», а не «Прибрати».
-    await _show(target, text, wizard_confirm(inherited_dimensions(query, fresh)))
+    await _show(target, text, wizard_confirm(inherited_dimensions(query, fresh), back=back))
 
 
 # ---------------------------------------------------------------------------
@@ -187,6 +251,10 @@ async def go_back(callback: CallbackQuery, services: BotServices, state: FSMCont
         await _goto_traffic(callback, state)
     elif step == "dr":
         await _goto_dr(callback, state)
+    elif step == "outlinks":
+        await _goto_outlinks(callback, state)
+    elif step == "spam":
+        await _goto_spam(callback, state)
     else:
         await _goto_confirm(callback, services, state)
 
@@ -323,7 +391,7 @@ async def pick_dr(callback: CallbackQuery, services: BotServices, state: FSMCont
 
     await state.update_data(dr_min=None if choice == "any" else float(choice), dr_max=None)
     await _mark_fresh(state, Dimension.DR)
-    await _goto_confirm(callback, services, state)
+    await _after_dr(callback, services, state)
 
 
 @router.message(Wizard.dr)
@@ -338,6 +406,90 @@ async def type_dr(message: Message, services: BotServices, state: FSMContext) ->
 
     await state.update_data(dr_min=value, dr_max=None)
     await _mark_fresh(state, Dimension.DR)
+    await _after_dr(message, services, state)
+
+
+# ---------------------------------------------------------------------------
+# Крок «Вихідні лінки» (лише для баз із цією колонкою — «Морди»)
+# ---------------------------------------------------------------------------
+
+
+@router.callback_query(F.data.startswith("wizard:outlinks:"))
+async def pick_outlinks(callback: CallbackQuery, services: BotServices, state: FSMContext) -> None:
+    choice = callback.data.split(":")[2]
+
+    if choice == "manual":
+        await callback.answer()
+        if callback.message:
+            await callback.message.answer(
+                "✍️ Напишіть мінімальну к-сть вихідних лінків, наприклад <code>25</code>",
+                reply_markup=cancel_only(),
+            )
+        return
+
+    is_any = choice == "any"
+    await state.update_data(
+        outlinks_min=None if is_any else float(choice),
+        outlinks_max=None,
+    )
+    await _mark_fresh(state, Dimension.OUTLINKS)
+    await _after_outlinks(callback, services, state)
+
+
+@router.message(Wizard.outlinks)
+async def type_outlinks(message: Message, services: BotServices, state: FSMContext) -> None:
+    value = parse_number(message.text)
+    if value is None:
+        await message.answer(
+            "Потрібне число, наприклад <code>25</code>. Або натисніть «Не важливо».",
+            reply_markup=wizard_outlinks(),
+        )
+        return
+
+    await state.update_data(outlinks_min=value, outlinks_max=None)
+    await _mark_fresh(state, Dimension.OUTLINKS)
+    await _after_outlinks(message, services, state)
+
+
+# ---------------------------------------------------------------------------
+# Крок «Заспамленість» (у кількості заспамлених лінків — лише «Морди»)
+# ---------------------------------------------------------------------------
+
+
+@router.callback_query(F.data.startswith("wizard:spam:"))
+async def pick_spam(callback: CallbackQuery, services: BotServices, state: FSMContext) -> None:
+    choice = callback.data.split(":")[2]
+
+    if choice == "manual":
+        await callback.answer()
+        if callback.message:
+            await callback.message.answer(
+                "✍️ Напишіть мінімальну к-сть заспамлених лінків, наприклад <code>20</code>",
+                reply_markup=cancel_only(),
+            )
+        return
+
+    is_any = choice == "any"
+    await state.update_data(
+        spam_min=None if is_any else float(choice),
+        spam_max=None,
+    )
+    await _mark_fresh(state, Dimension.SPAM)
+    await _goto_confirm(callback, services, state)
+
+
+@router.message(Wizard.spam)
+async def type_spam(message: Message, services: BotServices, state: FSMContext) -> None:
+    value = parse_number(message.text)
+    if value is None:
+        await message.answer(
+            "Потрібне число, наприклад <code>20</code>. Або натисніть «Не важливо».",
+            reply_markup=wizard_spam(),
+        )
+        return
+
+    await state.update_data(spam_min=value, spam_max=None)
+    await _mark_fresh(state, Dimension.SPAM)
     await _goto_confirm(message, services, state)
 
 
