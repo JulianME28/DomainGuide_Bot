@@ -13,7 +13,7 @@ from aiogram.types import CallbackQuery, Message
 
 from app.analytics.query import DonorQuery
 from app.bot.context import BotServices
-from app.bot.execution import execute, safe_edit, show_result
+from app.bot.execution import execute, resolve_with_ai, safe_edit, show_result
 from app.bot.keyboards import (
     back_to_menu,
     cancel_only,
@@ -280,9 +280,18 @@ def _country_code_for(zone: str) -> str:
 async def receive_free_text(message: Message, services: BotServices, state: FSMContext) -> None:
     """Вільний запит, коли його попросили кнопкою."""
     data = await state.get_data()
-    parsed = parse_free_text(message.text or "", default_section=data.get("section_key", "magic"))
+    text = message.text or ""
+    parsed = parse_free_text(text, default_section=data.get("section_key", "magic"))
 
     if parsed.needs_clarification:
+        # Словник не зрозумів — резервно пробуємо ШІ (якщо ввімкнено).
+        ai_query = await resolve_with_ai(services, message.from_user.id, text)
+        if ai_query is not None:
+            await state.set_state(None)
+            await state.update_data(**query_to_state(ai_query))
+            await show_result(message, services, ai_query, message.from_user.id)
+            return
+
         from app.text.freeform import CLARIFICATION_TEXT
 
         await message.answer(CLARIFICATION_TEXT, reply_markup=cancel_only())

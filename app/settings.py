@@ -41,6 +41,24 @@ class Settings:
     rate_limit_window_seconds: int
     log_level: str
 
+    # --- ШІ для вільних запитів (за замовчуванням вимкнено) ------------------
+    # repr=False — ключ ШІ, як і токен бота, не має потрапити в лог чи в текст
+    # помилки. Порожній ключ = ШІ вимкнено, навіть якщо LLM_PROVIDER=anthropic.
+    llm_api_key: str = field(default="", repr=False)
+    llm_model: str = "claude-haiku-4-5-20251001"
+    llm_timeout_seconds: int = 20
+    llm_calls_limit: int = 10
+    llm_window_seconds: int = 3600
+
+    @property
+    def llm_enabled(self) -> bool:
+        """Чи ШІ реально ввімкнено: обрано провайдера anthropic І є ключ.
+
+        Немає ключа — ШІ вимкнено (тихий фолбек на словниковий розбір), навіть
+        якщо провайдера вказали. Це навмисно: бот має працювати ще до того, як
+        власниця впише ключ."""
+        return self.llm_provider == "anthropic" and bool(self.llm_api_key)
+
     def is_allowed(self, user_id: int) -> bool:
         """Чи можна цьому Telegram ID користуватися ботом.
 
@@ -168,4 +186,13 @@ def load_settings(env_file: str | Path | None = None, *, require_token: bool = T
             os.getenv("RATE_LIMIT_WINDOW_SECONDS", ""), "RATE_LIMIT_WINDOW_SECONDS", 60
         ),
         log_level=(os.getenv("LOG_LEVEL", "INFO").strip().upper() or "INFO"),
+        llm_api_key=os.getenv("LLM_API_KEY", "").strip(),
+        llm_model=(os.getenv("LLM_MODEL", "").strip() or "claude-haiku-4-5-20251001"),
+        llm_timeout_seconds=_parse_int(
+            os.getenv("LLM_TIMEOUT_SECONDS", ""), "LLM_TIMEOUT_SECONDS", 20
+        ),
+        llm_calls_limit=_parse_int(os.getenv("LLM_CALLS_LIMIT", ""), "LLM_CALLS_LIMIT", 10),
+        llm_window_seconds=_parse_int(
+            os.getenv("LLM_WINDOW_SECONDS", ""), "LLM_WINDOW_SECONDS", 3600
+        ),
     )

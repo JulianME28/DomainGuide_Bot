@@ -16,7 +16,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
 
 from app.bot.context import BotServices
-from app.bot.execution import show_result
+from app.bot.execution import resolve_with_ai, show_result
 from app.bot.keyboards import back_to_menu, cancel_only
 from app.bot.states import Ask, query_to_state
 from app.text.freeform import CLARIFICATION_TEXT, parse_free_text
@@ -39,9 +39,16 @@ async def cmd_query(message: Message, state: FSMContext) -> None:
 async def handle_free_text(message: Message, services: BotServices, state: FSMContext) -> None:
     """Будь-який текст поза кроками майстра розбирається як запит."""
     data = await state.get_data()
-    parsed = parse_free_text(message.text or "", default_section=data.get("section_key", "magic"))
+    text = message.text or ""
+    parsed = parse_free_text(text, default_section=data.get("section_key", "magic"))
 
     if parsed.needs_clarification:
+        # Словник не зрозумів — пробуємо ШІ (якщо ввімкнено). Не вийшло — підказка.
+        ai_query = await resolve_with_ai(services, message.from_user.id, text)
+        if ai_query is not None:
+            await state.update_data(**query_to_state(ai_query))
+            await show_result(message, services, ai_query, message.from_user.id)
+            return
         await message.answer(CLARIFICATION_TEXT, reply_markup=back_to_menu())
         return
 

@@ -31,6 +31,7 @@ from app.bot.middlewares import setup_middlewares
 from app.data.columns import ColumnsConfigError, load_columns_config
 from app.data.repository import DonorRepository
 from app.data.sheets import SheetsReader
+from app.llm.service import build_ai_service
 from app.logging_setup import get_logger, setup_logging
 from app.settings import Settings, SettingsError, load_settings
 
@@ -47,7 +48,14 @@ def build_services(settings: Settings) -> BotServices:
     )
     repository = DonorRepository(reader, columns, ttl_seconds=settings.cache_ttl_seconds)
 
-    return BotServices(settings=settings, columns=columns, repository=repository)
+    # ШІ — лише якщо у .env вписано ключ. Інакше None, і бот працює словником.
+    ai = build_ai_service(settings)
+    if ai is not None:
+        logger.info(
+            "ШІ увімкнено: провайдер %s, модель %s", settings.llm_provider, settings.llm_model
+        )
+
+    return BotServices(settings=settings, columns=columns, repository=repository, ai=ai)
 
 
 async def run() -> None:

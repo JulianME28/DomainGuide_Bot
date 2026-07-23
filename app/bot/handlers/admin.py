@@ -52,7 +52,8 @@ async def admin_actions(callback: CallbackQuery, services: BotServices) -> None:
         await safe_edit(callback, ADMIN_MENU_TEXT, admin_menu())
 
     elif action == "status":
-        await safe_edit(callback, await build_status_text(services), admin_menu())
+        text = await build_status_text(services) + "\n\n" + _ai_status_text(services)
+        await safe_edit(callback, text, admin_menu())
 
     elif action == "columns":
         await safe_edit(callback, _columns_text(services), admin_menu())
@@ -115,6 +116,27 @@ def _columns_text(services: BotServices) -> str:
 
     lines.append("<i>Колонки гео в даних немає: країна визначається за доменною зоною.</i>")
     return "\n".join(lines)
+
+
+def _ai_status_text(services: BotServices) -> str:
+    """Рядок статусу ШІ для адмінки: увімкнено/вимкнено, модель, виклики за день."""
+    settings = services.settings
+    if services.ai is None:
+        state = "вимкнено"
+        calls = 0
+        hint = "щоб увімкнути — впишіть LLM_PROVIDER=anthropic і LLM_API_KEY у .env"
+    else:
+        state = "увімкнено"
+        calls = services.ai.calls_today
+        hint = "викликається лише коли словник не зрозумів запит"
+
+    return (
+        f"🤖 <b>ШІ (вільні запити):</b> {state}\n"
+        f"провайдер: <code>{settings.llm_provider}</code>, "
+        f"модель: <code>{settings.llm_model}</code>\n"
+        f"викликів сьогодні: {calls}\n"
+        f"<i>{hint}</i>"
+    )
 
 
 def _users_text(services: BotServices) -> str:

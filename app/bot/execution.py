@@ -152,6 +152,17 @@ async def show_multi_country(
     await status.edit_text(render_multi_country(result), reply_markup=back_to_menu())
 
 
+async def resolve_with_ai(services: BotServices, user_id: int, text: str) -> DonorQuery | None:
+    """Резервний розбір через ШІ — лише коли ШІ ввімкнено (є ключ).
+
+    Викликається ТІЛЬКИ якщо детермінований словниковий розбір не зрозумів
+    запит. Будь-яка проблема (вимкнено, ліміт, помилка, таймаут) → None, і
+    викликач показує звичайну підказку. ШІ бачить лише текст — не дані."""
+    if services.ai is None:
+        return None
+    return await services.ai.try_interpret(user_id, text)
+
+
 async def safe_edit(
     callback: CallbackQuery,
     text: str,

@@ -6,7 +6,7 @@ import pytest
 
 from app.analytics.query import DonorQuery
 from app.bot.context import ActionLog, BotServices
-from app.bot.execution import execute
+from app.bot.execution import STATUS_TEXT, execute
 from app.bot.handlers import build_router
 from app.bot.keyboards import (
     admin_menu,
@@ -582,3 +582,61 @@ class TestМайстерВихідніІСпам:
             assert "wizard:back" in data, "має бути «Назад»"
             for code in _callback_data(keyboard):
                 assert len(code.encode("utf-8")) <= 64
+
+
+class SpyAI:
+    """Підміна сервісу ШІ: рахує виклики й віддає заготовлений результат."""
+
+    def __init__(self, result=None) -> None:
+        self.result = result
+        self.calls: list[tuple] = []
+
+    async def try_interpret(self, user_id, text):
+        self.calls.append((user_id, text))
+        return self.result
+
+
+class TestШІФолбек:
+    """ШІ — резерв: працює лише коли словник не зрозумів і ШІ ввімкнено."""
+
+    def _services(self, repository, columns_config, ai):
+        return BotServices(
+            settings=make_settings(),
+            columns=columns_config,
+            repository=repository,
+            action_log=ActionLog(),
+            ai=ai,
+        )
+
+    async def test_зрозумілий_запит_не_кличе_ші(self, repository, columns_config):
+        """Усе, що словник розібрав, лишається миттєвим — ШІ не турбуємо."""
+        from app.bot.handlers.freeform import handle_free_text
+
+        spy = SpyAI()
+        services = self._services(repository, columns_config, spy)
+        await handle_free_text(FakeMessage(text="Німеччина"), services, FakeState({}))
+
+        assert spy.calls == [], "зрозумілий запит не має викликати ШІ"
+
+    async def test_незрозумілий_без_ші_дає_підказку(self, repository, columns_config):
+        from app.bot.handlers.freeform import handle_free_text
+        from app.text.freeform import CLARIFICATION_TEXT
+
+        services = self._services(repository, columns_config, None)  # ШІ вимкнено
+        message = FakeMessage(text="qweasd zxcvbn")
+        await handle_free_text(message, services, FakeState({}))
+
+        assert any(answer[0] == CLARIFICATION_TEXT for answer in message.answers)
+
+    async def test_незрозумілий_з_ші_виконує_запит(self, repository, columns_config):
+        from app.bot.handlers.freeform import handle_free_text
+
+        spy = SpyAI(result=DonorQuery(section_key="magic", country=country_by_code("de")))
+        services = self._services(repository, columns_config, spy)
+        # Навмисно беззмістовний для словника текст — має піти в ШІ.
+        message = FakeMessage(text="підбери щось пристойне тільки не сміття qwerty")
+        await handle_free_text(message, services, FakeState({}))
+
+        assert len(spy.calls) == 1, "незрозумілий запит має піти в ШІ"
+        # show_result відпрацював: «Рахую...» → картка.
+        assert message.answers and message.answers[0][0] == STATUS_TEXT
