@@ -344,7 +344,7 @@ class TestКартка:
         card = render_result(run_query(mordy, mordy_query()))
         assert "вихідних лінків" in card
         # Заспамленість тепер РОЗПОДІЛ за кількістю, а не середній відсоток.
-        assert "Заспамленість (донорів за к-стю лінків)" in card
+        assert "Заспамленість:" in card
         assert "Середня заспамленість" not in card
         # Групи розподілу видно в картці (напр. «3 (1-20)»).
         assert "(1-20)" in card
@@ -365,7 +365,7 @@ class TestКартка:
         assert "Середній DR" in card
         assert "Середній трафік" in card
         assert "Середня к-сть вихідних лінків" in card
-        assert "Заспамленість (донорів за к-стю лінків)" in card
+        assert "Заспамленість:" in card
 
     async def test_нулі_показані_біля_середнього(self, mordy):
         """Біля середньої к-сті вихідних — приписка про нулі (m4 = 1 нуль)."""

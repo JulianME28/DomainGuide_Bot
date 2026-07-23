@@ -99,9 +99,9 @@ def _spam_distribution_line(distribution: tuple[tuple[str, int], ...]) -> str:
     Перше число — скільки донорів у групі, у дужках — діапазон заспамлених
     лінків. Це РОЗПОДІЛ (а не середнє), тому й підпис інший."""
     if not distribution:
-        return "🧪 <b>Заспамленість (донорів за к-стю лінків):</b> <i>немає даних</i>"
+        return "🧪 <b>Заспамленість:</b> <i>немає даних</i>"
     parts = ", ".join(f"{number(count)} ({label})" for label, count in distribution)
-    return f"🧪 <b>Заспамленість (донорів за к-стю лінків):</b> {parts}"
+    return f"🧪 <b>Заспамленість:</b> {parts}"
 
 
 def _metrics_block(core: Aggregate, *, tracks_spam: bool = False) -> list[str]:
