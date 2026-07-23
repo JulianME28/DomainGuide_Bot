@@ -57,6 +57,61 @@ class FakeUser:
         self.id = user_id
 
 
+class FakeSent:
+    """Повідомлення, яке повернув answer(): show_result потім його редагує."""
+
+    def __init__(self) -> None:
+        self.edits: list[tuple] = []
+
+    async def edit_text(self, text, reply_markup=None):
+        self.edits.append((text, reply_markup))
+
+
+class FakeMessage:
+    def __init__(self, text: str = "", user_id: int = 1) -> None:
+        self.text = text
+        self.from_user = FakeUser(user_id)
+        self.answers: list[tuple] = []
+        self.sents: list[FakeSent] = []
+
+    async def answer(self, text, reply_markup=None):
+        self.answers.append((text, reply_markup))
+        sent = FakeSent()
+        self.sents.append(sent)
+        return sent
+
+
+class FakeCallback:
+    def __init__(self, data: str, message: FakeMessage | None = None, user_id: int = 1) -> None:
+        self.data = data
+        self.message = message if message is not None else FakeMessage(user_id=user_id)
+        self.from_user = FakeUser(user_id)
+        self.answers: list[tuple] = []
+
+    async def answer(self, text=None, show_alert: bool = False):
+        self.answers.append((text, show_alert))
+
+
+class FakeState:
+    def __init__(self, data: dict | None = None) -> None:
+        self._data = dict(data or {})
+        self.current_state = "unset"
+
+    async def get_data(self):
+        return dict(self._data)
+
+    async def update_data(self, **kwargs):
+        self._data.update(kwargs)
+        return dict(self._data)
+
+    async def set_state(self, state=None):
+        self.current_state = state
+
+
+def _callback_data(markup) -> list[str]:
+    return [button.callback_data for row in markup.inline_keyboard for button in row]
+
+
 class TestЗбіркаБота:
     def test_маршрутизатор_збирається_з_правильним_порядком(self):
         """Збираємо рівно один раз: aiogram не дозволяє підключити ті самі
@@ -303,3 +358,101 @@ class TestНаскрізнийЗапитКраїни:
     def test_сервіси_збираються(self, services):
         assert services.section_title("magic") == "Меджик"
         assert services.section_title("невідомий") == "невідомий"
+
+
+class TestПідказкаПереплутаногоРежиму:
+    """Ввели «.ua» в мовному режимі (або мову в країновому) — бот пояснює
+    і пропонує вибір, а не віддає порожній результат."""
+
+    async def test_зона_в_мовному_режимі_не_дає_порожнечі(self, services):
+        from app.bot.handlers.sections import receive_language
+
+        message = FakeMessage(text=".ua")
+        state = FakeState({"section_key": "magic"})
+        await receive_language(message, services, state)
+
+        # Рівно одна відповідь — підказка. Ані «Рахую...», ані порожній нуль.
+        assert len(message.answers) == 1
+        text, markup = message.answers[0]
+        assert "доменна зона" in text and "не мова" in text
+        assert "Україна" in text and "українська" in text
+        codes = _callback_data(markup)
+        assert "q:country:magic:ua" in codes
+        assert "q:lang:magic:uk" in codes
+
+    async def test_мова_в_країновому_режимі_дає_дзеркальну_підказку(self, services):
+        from app.bot.handlers.sections import receive_country
+
+        message = FakeMessage(text="Ukrainian")
+        state = FakeState({"section_key": "magic"})
+        await receive_country(message, services, state)
+
+        assert len(message.answers) == 1
+        text, markup = message.answers[0]
+        assert "це мова" in text and "не країна" in text
+        codes = _callback_data(markup)
+        assert "q:lang:magic:uk" in codes
+        assert "q:country:magic:ua" in codes
+
+    async def test_кнопка_мови_виконує_мовний_запит(self, services, monkeypatch):
+        """Кнопка «українська (мова)» справді запускає мовний запит."""
+        import app.bot.handlers.sections as sections
+
+        captured = {}
+
+        async def fake_show_result(target, svc, query, user_id):
+            captured["query"] = query
+
+        monkeypatch.setattr(sections, "show_result", fake_show_result)
+
+        callback = FakeCallback("q:lang:magic:uk")
+        state = FakeState({"section_key": "magic"})
+        await sections.query_language(callback, services, state)
+
+        assert captured["query"].language is language_by_code("uk")
+        assert captured["query"].country is None
+        assert captured["query"].section_key == "magic"
+        assert state.current_state is None, "крок введення знято"
+
+    async def test_кнопка_країни_виконує_країновий_запит(self, services, monkeypatch):
+        """Кнопка «🇺🇦 Україна (країна)» запускає країновий запит."""
+        import app.bot.handlers.sections as sections
+
+        captured = {}
+
+        async def fake_show_result(target, svc, query, user_id):
+            captured["query"] = query
+
+        monkeypatch.setattr(sections, "show_result", fake_show_result)
+
+        callback = FakeCallback("q:country:magic:ua")
+        state = FakeState({"section_key": "magic"})
+        await sections.query_country(callback, services, state)
+
+        assert captured["query"].country is country_by_code("ua")
+        assert captured["query"].language is None
+        assert state.current_state is None
+
+    async def test_нерозпізнане_поводиться_як_раніше(self, services):
+        """Незрозуміле введення в мовному режимі — старе повідомлення, без підказки."""
+        from app.bot.handlers.sections import receive_language
+
+        message = FakeMessage(text="абракадабра")
+        state = FakeState({"section_key": "magic"})
+        await receive_language(message, services, state)
+
+        text, _markup = message.answers[0]
+        assert "Не впізнав мову" in text
+
+    def test_кнопки_підказки_вкладаються_в_ліміт(self):
+        """Callback-дані підказки теж мають лишатися в межах 64 байтів."""
+        from app.bot.keyboards import cross_mode_keyboard
+        from app.dictionary.resolver import hint_for_country_mode, hint_for_language_mode
+
+        markups = (
+            cross_mode_keyboard("magic", hint_for_language_mode(".ua"), mode="language"),
+            cross_mode_keyboard("mordy", hint_for_country_mode("німецькою"), mode="country"),
+        )
+        for markup in markups:
+            for code in _callback_data(markup):
+                assert len(code.encode("utf-8")) <= 64

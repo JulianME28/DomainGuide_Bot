@@ -18,14 +18,22 @@ from app.bot.keyboards import (
     back_to_menu,
     cancel_only,
     country_picker,
+    cross_mode_keyboard,
     result_menu,
     section_menu,
 )
 from app.bot.states import Ask, query_from_state, query_to_state
 from app.dictionary.countries import country_by_code
-from app.dictionary.resolver import find_country_match, resolve_language, scan_entities
+from app.dictionary.languages import language_by_code
+from app.dictionary.resolver import (
+    find_country_match,
+    hint_for_country_mode,
+    hint_for_language_mode,
+    resolve_language,
+)
 from app.text.cards import render_breakdown, render_recommendations
 from app.text.freeform import parse_free_text
+from app.text.prompts import cross_mode_prompt
 
 router = Router(name="sections")
 
@@ -103,6 +111,25 @@ async def query_country(callback: CallbackQuery, services: BotServices, state: F
         return
 
     query = DonorQuery(section_key=section_key, country=country)
+    # Кнопку могли натиснути з режиму введення (напр. підказки) — знімаємо стан,
+    # щоб наступний текст не потрапив у старий крок.
+    await state.set_state(None)
+    await state.update_data(**query_to_state(query))
+    await callback.answer()
+    await show_result(callback, services, query, callback.from_user.id)
+
+
+@router.callback_query(F.data.startswith("q:lang:"))
+async def query_language(callback: CallbackQuery, services: BotServices, state: FSMContext) -> None:
+    """Швидкий запит по мові — дзеркало q:country. Потрібен для кнопок підказки."""
+    _, _, section_key, code = callback.data.split(":")
+    language = language_by_code(code)
+    if language is None:
+        await callback.answer("Невідома мова", show_alert=True)
+        return
+
+    query = DonorQuery(section_key=section_key, language=language)
+    await state.set_state(None)
     await state.update_data(**query_to_state(query))
     await callback.answer()
     await show_result(callback, services, query, callback.from_user.id)
@@ -150,21 +177,19 @@ async def receive_country(message: Message, services: BotServices, state: FSMCon
     """Приймає назву країни, введену вручну."""
     data = await state.get_data()
     section_key = data.get("section_key", "magic")
+    text = message.text or ""
 
-    # Спершу дивимось, чи це раптом не мова: «англійською» — не країна.
-    entities = scan_entities(message.text or "")
-    if entities.country is None and entities.language is not None:
+    # Спершу дивимось, чи це раптом не мова: «українською» — не країна.
+    # Якщо так — не рахуємо мовчки, а показуємо дзеркальну підказку з вибором.
+    hint = hint_for_country_mode(text)
+    if hint is not None:
         await message.answer(
-            f"Це мова ({entities.language.name_uk}), а не країна.\n\n"
-            f"Рахую по мові — країна визначається за доменною зоною, а мова окремо.",
+            cross_mode_prompt(hint, mode="country"),
+            reply_markup=cross_mode_keyboard(section_key, hint, mode="country"),
         )
-        query = DonorQuery(section_key=section_key, language=entities.language)
-        await state.set_state(None)
-        await state.update_data(**query_to_state(query))
-        await show_result(message, services, query, message.from_user.id)
         return
 
-    found = find_country_match(message.text or "", allow_short=True)
+    found = find_country_match(text, allow_short=True)
     if found is None:
         await message.answer(
             "Не впізнав країну. Спробуйте інакше: <code>Німеччина</code>, "
@@ -184,20 +209,31 @@ async def receive_language(message: Message, services: BotServices, state: FSMCo
     """Приймає назву мови, введену вручну."""
     data = await state.get_data()
     section_key = data.get("section_key", "magic")
+    text = message.text or ""
 
-    language = resolve_language(message.text or "", allow_short=True)
-    if language is None:
+    language = resolve_language(text, allow_short=True)
+    if language is not None:
+        query = DonorQuery(section_key=section_key, language=language)
+        await state.set_state(None)
+        await state.update_data(**query_to_state(query))
+        await show_result(message, services, query, message.from_user.id)
+        return
+
+    # Не мова. Може, це доменна зона чи країна («.ua», «Німеччина»)? Тоді не
+    # віддаємо порожній результат, а пояснюємо і пропонуємо два варіанти.
+    hint = hint_for_language_mode(text)
+    if hint is not None:
         await message.answer(
-            "Не впізнав мову. Спробуйте: <code>німецькою</code>, <code>German</code>, "
-            "<code>англомовні</code>.",
-            reply_markup=cancel_only(),
+            cross_mode_prompt(hint, mode="language"),
+            reply_markup=cross_mode_keyboard(section_key, hint, mode="language"),
         )
         return
 
-    query = DonorQuery(section_key=section_key, language=language)
-    await state.set_state(None)
-    await state.update_data(**query_to_state(query))
-    await show_result(message, services, query, message.from_user.id)
+    await message.answer(
+        "Не впізнав мову. Спробуйте: <code>німецькою</code>, <code>German</code>, "
+        "<code>англомовні</code>.",
+        reply_markup=cancel_only(),
+    )
 
 
 @router.message(Ask.zone)

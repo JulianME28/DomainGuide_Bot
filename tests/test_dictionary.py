@@ -24,7 +24,13 @@ from app.dictionary.languages import (
     language_by_code,
     language_by_data_value,
 )
-from app.dictionary.resolver import resolve_country, resolve_language, scan_entities
+from app.dictionary.resolver import (
+    hint_for_country_mode,
+    hint_for_language_mode,
+    resolve_country,
+    resolve_language,
+    scan_entities,
+)
 from app.dictionary.zones import GLOBAL_ZONES, is_global_zone
 
 
@@ -318,3 +324,52 @@ class TestСканВільногоТексту:
         assert scan_entities("").is_empty
         assert scan_entities("   ").is_empty
         assert scan_entities("абракадабра щось незрозуміле").is_empty
+
+
+class TestПідказкаПереплутаногоРежиму:
+    """У мовному режимі ввели країну/зону (або навпаки) — потрібна підказка,
+    а не порожній результат."""
+
+    def test_зона_в_мовному_режимі_дає_підказку(self):
+        """«.ua» — доменна зона, а не мова. Пропонуємо Україну і українську."""
+        hint = hint_for_language_mode(".ua")
+        assert hint is not None
+        assert hint.country is country_by_code("ua")
+        assert hint.language is language_by_code("uk")
+        assert hint.via_zone is True
+
+    def test_назва_країни_в_мовному_режимі_дає_підказку(self):
+        hint = hint_for_language_mode("Німеччина")
+        assert hint is not None
+        assert hint.country is country_by_code("de")
+        assert hint.language is language_by_code("de")
+        assert hint.via_zone is False, "назву ввели словом, не зоною"
+
+    def test_глобальна_зона_не_дає_підказки(self):
+        """«.com» нікому не належить — це не країна, підказки немає."""
+        assert hint_for_language_mode(".com") is None
+
+    def test_нерозпізнане_в_мовному_режимі_без_підказки(self):
+        assert hint_for_language_mode("абракадабра") is None
+
+    def test_мова_в_країновому_режимі_дає_дзеркальну_підказку(self):
+        """«Ukrainian» / «українською» — мова, а не країна."""
+        for text in ("Ukrainian", "українською"):
+            hint = hint_for_country_mode(text)
+            assert hint is not None, text
+            assert hint.language is language_by_code("uk")
+            assert hint.country is country_by_code("ua"), "українською володіє одна країна"
+
+    def test_мова_кількох_країн_без_однозначної_країни(self):
+        """Німецькою пишуть у трьох країнах — конкретної країни в підказці немає."""
+        hint = hint_for_country_mode("німецькою")
+        assert hint is not None
+        assert hint.language is language_by_code("de")
+        assert hint.country is None, "де/ат/ch — однозначної країни немає"
+
+    def test_країна_в_країновому_режимі_без_підказки(self):
+        """«Німеччина» — це справді країна, дзеркальна підказка не потрібна."""
+        assert hint_for_country_mode("Німеччина") is None
+
+    def test_нерозпізнане_в_країновому_режимі_без_підказки(self):
+        assert hint_for_country_mode("абракадабра") is None

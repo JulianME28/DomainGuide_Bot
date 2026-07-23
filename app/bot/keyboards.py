@@ -188,6 +188,48 @@ def _add_navigation(builder: InlineKeyboardBuilder, *, back: str) -> None:
     builder.button(text="🏠 До меню", callback_data="menu:main")
 
 
+def cross_mode_keyboard(section_key: str, hint, *, mode: str) -> InlineKeyboardMarkup:
+    """Кнопки підказки «ви переплутали режим».
+
+    Порядок кнопок збігається з текстом підказки: першим іде «природний»
+    варіант (те, чим введене є насправді), другим — той самий запит у
+    поточному режимі. Для мов кількох країн конкретної країни немає — тоді
+    друга кнопка веде у звичайний вибір країни.
+    """
+    from app.text.prompts import country_label, language_label
+
+    builder = InlineKeyboardBuilder()
+
+    if mode == "language":
+        # Ввели країну/зону в мовному режимі: спершу країна, потім її мова.
+        builder.button(
+            text=country_label(hint),
+            callback_data=f"q:country:{section_key}:{hint.country.code}",
+        )
+        builder.button(
+            text=language_label(hint),
+            callback_data=f"q:lang:{section_key}:{hint.language.code}",
+        )
+    else:
+        # Ввели мову в країновому режимі: спершу мова, потім країна.
+        builder.button(
+            text=language_label(hint),
+            callback_data=f"q:lang:{section_key}:{hint.language.code}",
+        )
+        if hint.country is not None:
+            builder.button(
+                text=country_label(hint),
+                callback_data=f"q:country:{section_key}:{hint.country.code}",
+            )
+        else:
+            builder.button(text="🌍 Обрати країну", callback_data=f"pick:country:{section_key}")
+
+    builder.button(text="🔄 Скинути", callback_data="wizard:reset")
+    builder.button(text="🏠 До меню", callback_data="menu:main")
+    builder.adjust(1, 1, 2)
+    return builder.as_markup()
+
+
 def cancel_only() -> InlineKeyboardMarkup:
     """Клавіатура для кроку з ручним введенням."""
     builder = InlineKeyboardBuilder()

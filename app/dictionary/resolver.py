@@ -30,7 +30,12 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from app.dictionary.countries import COUNTRIES, Country, country_by_zone
+from app.dictionary.countries import (
+    COUNTRIES,
+    Country,
+    countries_with_language,
+    country_by_zone,
+)
 from app.dictionary.languages import LANGUAGES, Language
 from app.dictionary.normalize import find_zone_mentions, mask_span, normalize_text
 from app.dictionary.zones import is_global_zone
@@ -254,4 +259,81 @@ def scan_entities(text: str) -> EntityScan:
         language=language,
         zones=tuple(dict.fromkeys(country_zones)),
         global_zones=tuple(dict.fromkeys(global_zones)),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Підказка «ви переплутали режим»
+#
+# Мовний і країновий запити — різні речі (див. початок файлу). Коли в мовному
+# режимі вводять «.ua» або «Німеччину», відповідь була б порожня: доменна зона
+# не може бути мовою. Замість мовчазного нуля показуємо підказку з двома
+# варіантами. Дзеркально — коли в країновому режимі вводять назву мови.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class CrossModeHint:
+    """Що ввели «не в тому режимі» і які два варіанти можна запропонувати.
+
+    Обидва поля описують ОДНЕ введення з двох боків: `country` — країновий
+    варіант, `language` — мовний. У країновому режимі для мов, якими пишуть
+    кілька країн (німецька, англійська), однозначної країни немає — тоді
+    `country` буде None, і кнопку країни заміняє звичайний вибір країни.
+    """
+
+    query_text: str
+    """Те, що ввів користувач, — для цитати в підказці."""
+
+    country: Country | None
+    language: Language | None
+    via_zone: bool = False
+    """True, якщо країну впізнали з доменної зони («.ua»), а не з назви."""
+
+
+def _mentions_country_zone(text: str) -> bool:
+    """Чи є в тексті доменна зона, закріплена за країною («.ua», «.de»)."""
+    normalized = normalize_text(text)
+    return any(
+        country_by_zone(zone) is not None for zone, _start, _end in find_zone_mentions(normalized)
+    )
+
+
+def hint_for_language_mode(text: str) -> CrossModeHint | None:
+    """Мовний режим: якщо введене — країна чи доменна зона, а не мова.
+
+    Викликати лише ПІСЛЯ того, як мову розпізнати не вдалося. Якщо текст —
+    країна, повертаємо підказку з двома варіантами (країна та її основна мова).
+    Якщо це не країна (наприклад, глобальна зона «.com») — None, і далі йде
+    звичайне повідомлення «не впізнав мову».
+    """
+    found = find_country_match(text, allow_short=True)
+    if found is None:
+        return None
+
+    country = found[0]
+    return CrossModeHint(
+        query_text=text.strip(),
+        country=country,
+        language=country.language,
+        via_zone=_mentions_country_zone(text),
+    )
+
+
+def hint_for_country_mode(text: str) -> CrossModeHint | None:
+    """Країновий режим: якщо введене — мова, а не країна («українською»).
+
+    Повертає підказку з двома варіантами. Для однозначних мов (українська →
+    Україна) є конкретна країна; для мов кількох країн (німецька) country=None,
+    і кнопку країни заміняє загальний вибір.
+    """
+    entities = scan_entities(text)
+    if entities.language is None or entities.country is not None:
+        return None
+
+    homes = countries_with_language(entities.language.code)
+    return CrossModeHint(
+        query_text=text.strip(),
+        country=homes[0] if len(homes) == 1 else None,
+        language=entities.language,
     )
