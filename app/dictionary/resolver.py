@@ -215,6 +215,57 @@ def resolve_country(text: str, *, allow_short: bool = False) -> Country | None:
     return found[0] if found else None
 
 
+def find_all_countries(text: str, *, allow_short: bool = False) -> tuple[list[Country], str]:
+    """Знаходить УСІ згадані країни — для списку в одному запиті.
+
+    «Франция Индия Германия .fr» → [Франція, Індія, Німеччина] (по зоні теж).
+
+    Повертає (унікальні країни в порядку появи, залишок тексту). Залишок —
+    це той самий текст, де знайдені країни (і мови) затерті пробілами; із
+    нього викликач дістає нерозпізнані слова-кандидати.
+
+    Працює як `find_country_match`, тільки повторно: знайшли найкращий збіг —
+    затерли його — шукаємо далі, поки збіги є. Спершу затираємо мови, щоб
+    «англійською» не перетворилося на країну Англія (та сама хитрість, що в
+    scan_entities, лише багаторазова).
+    """
+    masked = normalize_text(text)
+    if not masked:
+        return [], ""
+
+    # Затираємо знайдений шматок і одразу нормалізуємо назад. Це важливо:
+    # find_language_match / find_country_match всередині самі нормалізують
+    # текст (стягують кілька пробілів в один), тому позиції їхніх збігів
+    # рахуються від СТИСНУТОГО тексту. Якщо не стискати після кожного
+    # затирання, наступний збіг ляже не туди.
+    def blank(text_: str, start: int, end: int) -> str:
+        return normalize_text(mask_span(text_, start, end))
+
+    # 1) Прибираємо всі згадки мов — щоб вони не стали країнами.
+    while True:
+        language_found = find_language_match(masked, allow_short=allow_short)
+        if language_found is None:
+            break
+        match = language_found[1]
+        masked = blank(masked, match.start, match.end)
+
+    # 2) Збираємо всі країни. Дедуп за кодом; порядок — за появою.
+    countries: list[Country] = []
+    seen: set[str] = set()
+    # Стеля ітерацій — страховка від зациклення (тексту завжди коротшає).
+    for _ in range(64):
+        found = find_country_match(masked, allow_short=allow_short)
+        if found is None:
+            break
+        country, match = found
+        if country.code not in seen:
+            seen.add(country.code)
+            countries.append(country)
+        masked = blank(masked, match.start, match.end)
+
+    return countries, masked
+
+
 # ---------------------------------------------------------------------------
 # Повне сканування вільного тексту
 # ---------------------------------------------------------------------------

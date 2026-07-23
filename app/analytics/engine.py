@@ -52,7 +52,7 @@ from dataclasses import dataclass
 
 from app.analytics.query import Dimension, DonorQuery, QueryKind
 from app.data.models import Dataset, Donor
-from app.dictionary.countries import country_by_zone
+from app.dictionary.countries import Country, country_by_zone
 from app.dictionary.languages import Language, display_language
 from app.dictionary.zones import is_global_zone
 
@@ -64,6 +64,10 @@ MIN_RELIABLE_SAMPLE = 3
 
 # Якщо середній DR або трафік нижчий за це — група слабка (ТЗ, розділ 7.6).
 WEAK_METRIC_THRESHOLD = 3
+
+# Скільки країн максимум за один запит-список. Більше — рахувати відмовляємось
+# (це вже не осмислений запит, а спроба перебрати півсвіту одним рядком).
+MAX_MULTI_COUNTRIES = 30
 
 # Групи розподілу за АБСОЛЮТНОЮ кількістю заспамлених лінків.
 # Кожен запис — (підпис, нижня межа, верхня межа|None). Порядок сталий.
@@ -225,6 +229,42 @@ class QueryResult:
 
     as_of: float | None = None
     """Час останнього успішного оновлення (для помітки про застарілість)."""
+
+
+@dataclass(frozen=True, slots=True)
+class MultiCountryResult:
+    """Результат запиту по СПИСКУ країн. Тільки числа, донорів тут немає.
+
+    Ключова тонкість — два різні числа:
+      * sum_counts — проста сума кількостей по країнах. Завищена, бо країни
+        зі спільною мовою (Німеччина/Австрія/Швейцарія) ділять тих самих
+        донорів на нейтральних зонах.
+      * unique.count — скільки РІЗНИХ донорів належать хоча б одній країні
+        списку. Саме це чесне «Разом». Середні теж рахуються по цьому набору.
+    """
+
+    section_title: str
+    query: DonorQuery
+    per_country: tuple[tuple[Country, int], ...]
+    """(країна, кількість) — відсортовано за спаданням кількості."""
+
+    unique: Aggregate
+    """Підрахунки по УНІКАЛЬНОМУ набору донорів (належать ≥1 країні списку)."""
+
+    sum_counts: int
+    unrecognized: tuple[str, ...] = ()
+    """Назви зі списку, які не вдалося впізнати як країну."""
+
+    available: bool = True
+    error: str | None = None
+    tracks_spam: bool = False
+    stale: bool = False
+    as_of: float | None = None
+
+    @property
+    def has_overlap(self) -> bool:
+        """Чи є донори, що належать кільком країнам (сума > унікальних)."""
+        return self.sum_counts > self.unique.count
 
 
 # ---------------------------------------------------------------------------
@@ -602,6 +642,72 @@ def run_query(dataset: Dataset, query: DonorQuery, *, with_breakdowns: bool = Tr
         language_breakdown=language_breakdown(core_donors) if with_breakdowns else (),
         country_breakdown=country_breakdown(core_donors) if with_breakdowns else (),
         total_in_base=dataset.count,
+        tracks_spam=dataset.tracks_spam,
+        stale=dataset.stale,
+        as_of=dataset.loaded_at if dataset.stale else None,
+    )
+
+
+def run_multi_country(
+    dataset: Dataset,
+    query: DonorQuery,
+    *,
+    unrecognized: tuple[str, ...] = (),
+) -> MultiCountryResult:
+    """Запит по СПИСКУ країн — за ОДИН прохід по базі.
+
+    Продуктивність (ТЗ, розділ про 31 000 рядків × до 30 країн): зовнішній
+    цикл по донорах ОДИН раз, внутрішній — короткий, по країнах списку. Це та
+    сама ідея, що у _country_totals рекомендацій (правка 747dfb6), а не окремий
+    прохід на кожну країну.
+
+    Належність до країни — той самий трикроковий водоспад, що й у одно-
+    країновому запиті (`_in_country_total`), тому числа сходяться з тим, що
+    показала б кожна країна окремо. Метрики застосовуються до всіх країн.
+    """
+    if not dataset.available:
+        return MultiCountryResult(
+            section_title=dataset.title,
+            query=query,
+            per_country=(),
+            unique=Aggregate(count=0),
+            sum_counts=0,
+            unrecognized=unrecognized,
+            available=False,
+            error=dataset.error,
+            tracks_spam=dataset.tracks_spam,
+        )
+
+    query = normalize_query(dataset, query)
+    countries = query.countries
+
+    counts = {country.code: 0 for country in countries}
+    unique_donors: list[Donor] = []
+
+    for donor in dataset.donors:
+        if not passes_metrics(donor, query):
+            continue
+        belongs = False
+        for country in countries:
+            if _in_country_total(donor, country):
+                counts[country.code] += 1
+                belongs = True
+        # Донора рахуємо в унікальний набір РАЗ, навіть якщо він підійшов
+        # кільком країнам — саме тут зникає подвійний рахунок.
+        if belongs:
+            unique_donors.append(donor)
+
+    per_country = tuple(
+        sorted(((c, counts[c.code]) for c in countries), key=lambda pair: pair[1], reverse=True)
+    )
+
+    return MultiCountryResult(
+        section_title=dataset.title,
+        query=query,
+        per_country=per_country,
+        unique=aggregate(unique_donors),
+        sum_counts=sum(counts.values()),
+        unrecognized=unrecognized,
         tracks_spam=dataset.tracks_spam,
         stale=dataset.stale,
         as_of=dataset.loaded_at if dataset.stale else None,

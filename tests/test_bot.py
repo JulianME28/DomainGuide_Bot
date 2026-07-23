@@ -363,6 +363,22 @@ class TestНаскрізнийЗапитКраїни:
         assert services.section_title("magic") == "Меджик"
         assert services.section_title("невідомий") == "невідомий"
 
+    async def test_понад_30_країн_дає_зрозуміле_повідомлення(self, services):
+        """Список > 30 країн не рахуємо — чесно кажемо про це, без падіння."""
+        from app.analytics.query import DonorQuery
+        from app.bot.execution import show_multi_country
+        from app.dictionary.countries import COUNTRIES
+
+        many = tuple(list(COUNTRIES.values())[:31])
+        message = FakeMessage()
+        await show_multi_country(
+            message, services, DonorQuery(section_key="magic", countries=many), 1
+        )
+
+        text, _markup = message.answers[-1]
+        assert "забагато країн" in text.lower()
+        assert "31" in text
+
 
 class TestПідказкаПереплутаногоРежиму:
     """Ввели «.ua» в мовному режимі (або мову в країновому) — бот пояснює

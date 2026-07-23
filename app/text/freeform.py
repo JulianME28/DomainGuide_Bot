@@ -41,12 +41,13 @@ DonorQuery, який згодом зможе будувати й нейроме�
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 from app.analytics.query import Dimension, DonorQuery
 from app.dictionary.normalize import normalize_text
-from app.dictionary.resolver import scan_entities
-from app.text.dimensions import active_dimensions, resolve_dimensions
+from app.dictionary.resolver import find_all_countries, scan_entities
+from app.text.dimensions import SPECS, active_dimensions, resolve_dimensions
 
 # Як користувач може назвати кожну базу.
 _SECTION_WORDS: dict[str, tuple[str, ...]] = {
@@ -54,6 +55,38 @@ _SECTION_WORDS: dict[str, tuple[str, ...]] = {
     "mordy": ("морди", "морд", "мордах", "мордами", "mordy"),
     "submits": ("сабміт", "сабмит", "submits", "сабмітах"),
 }
+
+# Слова, які лишаються в тексті після розбору списку країн, але країнами НЕ є:
+# структурні («по», «донори»), назви баз і назви вимірів. Усе інше, що схоже
+# на назву, вважаємо нерозпізнаною країною.
+_STRUCTURAL_STOPWORDS = frozenset(
+    {
+        "по", "на", "для", "про", "и", "і", "та", "або", "or", "and", "the", "of",
+        "for", "list", "донори", "донор", "донора", "донорів", "донорам", "донорами",
+        "покажи", "показати", "скільки", "дай", "знайди", "знайти", "хочу", "треба",
+        "потрібно", "база", "базі", "бази", "усі", "усіх", "все", "всі", "всіх",
+    }
+)  # fmt: skip
+_ALL_SECTION_WORDS = frozenset(word for words in _SECTION_WORDS.values() for word in words)
+_DIMENSION_STEMS = tuple(stem for spec in SPECS for stem in spec.stems)
+
+
+def _unrecognized_names(leftover: str) -> tuple[str, ...]:
+    """Слова із залишку тексту, які схожі на назву країни, але не впізнані.
+
+    Залишок — це текст, де вже затерто знайдені країни й мови. Викидаємо з
+    нього службові слова, назви баз і назви вимірів (їхні стеми), а решту
+    словесних токенів (≥3 літери) вважаємо нерозпізнаними назвами."""
+    tokens = re.findall(r"[a-zа-яёєіїґ]{3,}", leftover)
+    unrecognized: list[str] = []
+    for token in tokens:
+        if token in _ALL_SECTION_WORDS or token in _STRUCTURAL_STOPWORDS:
+            continue
+        if any(token.startswith(stem) for stem in _DIMENSION_STEMS):
+            continue
+        if token not in unrecognized:
+            unrecognized.append(token)
+    return tuple(unrecognized)
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,6 +109,9 @@ class ParsedQuery:
 
     cancelled: frozenset[str] = frozenset()
     """Виміри, які в цьому повідомленні явно ЗНЯЛИ («всі мови»)."""
+
+    unrecognized: tuple[str, ...] = ()
+    """Назви зі списку країн, які не вдалося впізнати (лише для запиту-списку)."""
 
     @property
     def needs_clarification(self) -> bool:
@@ -124,6 +160,40 @@ def parse_free_text(text: str, *, default_section: str = "magic") -> ParsedQuery
     outlinks_min, outlinks_max = limits(Dimension.OUTLINKS)
     spam_min, spam_max = limits(Dimension.SPAM)
 
+    active = active_dimensions()
+    metric_mentions = {dimension for dimension in matches if dimension in active}
+    cancelled = {
+        dimension for dimension, match in matches.items() if match.cancelled and dimension in active
+    }
+
+    # СПИСОК країн (≥2 в одному запиті) — окремий шлях: розклад по країнах і
+    # унікальний підсумок. Метричні фільтри застосовуються до всіх країн.
+    if not cancelled_dimension(Dimension.COUNTRY):
+        countries_all, leftover = find_all_countries(remaining)
+        if len(countries_all) >= 2:
+            unrecognized = _unrecognized_names(leftover)
+            multi_query = DonorQuery(
+                section_key=section,
+                countries=tuple(countries_all),
+                unrecognized=unrecognized,
+                dr_min=dr_min,
+                dr_max=dr_max,
+                traffic_min=traffic_min,
+                traffic_max=traffic_max,
+                outlinks_min=outlinks_min,
+                outlinks_max=outlinks_max,
+                spam_min=spam_min,
+                spam_max=spam_max,
+            )
+            return ParsedQuery(
+                query=multi_query,
+                understood=True,
+                section_named=section_named,
+                mentioned=frozenset({Dimension.COUNTRY} | metric_mentions),
+                cancelled=frozenset(cancelled),
+                unrecognized=unrecognized,
+            )
+
     query = DonorQuery(
         section_key=section,
         country=country,
@@ -141,15 +211,11 @@ def parse_free_text(text: str, *, default_section: str = "magic") -> ParsedQuery
         spam_max=spam_max,
     )
 
-    # Про що саме сказали в цьому повідомленні — задали або зняли.
-    # Виміри без колонок у даних (вихідні лінки, заспамленість) сюди не
-    # потрапляють: їхні фрази розпізнано й прибрано, але фільтра поки немає.
-    active = active_dimensions()
-    mentioned = {dimension for dimension in matches if dimension in active}
-    cancelled = {
-        dimension for dimension, match in matches.items() if match.cancelled and dimension in active
-    }
-
+    # Про що саме сказали в цьому повідомленні — задали або зняли. Метричні
+    # згадки й скасування вже пораховані вище (metric_mentions, cancelled).
+    # Виміри без колонок у даних (вихідні лінки, заспамленість) у mentioned не
+    # потрапляють: їхні фрази розпізнано, але фільтра поки немає.
+    mentioned = set(metric_mentions)
     if entities.country or entities.global_zones:
         mentioned.add(Dimension.COUNTRY)
     if entities.language:

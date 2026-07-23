@@ -76,6 +76,16 @@ class DonorQuery:
     zones: tuple[str, ...] = ()
     """Явно вказані зони — коли користувач написав «.com», а не назву країни."""
 
+    countries: tuple[Country, ...] = ()
+    """СПИСОК країн для запиту «по кількох країнах одразу». Коли тут ≥2 країн,
+    запит обробляється окремим шляхом (розклад по країнах + унікальний
+    підсумок), а не звичайною одно-країновою моделлю. `country` при цьому
+    порожній. Метричні фільтри застосовуються до всіх країн списку."""
+
+    unrecognized: tuple[str, ...] = ()
+    """Назви зі списку країн, які не впізнано (лише для запиту-списку). Несе
+    їх до картки, щоб показати окремим рядком. На підрахунки не впливає."""
+
     dr_min: float | None = None
     dr_max: float | None = None
     traffic_min: float | None = None
@@ -105,6 +115,11 @@ class DonorQuery:
         if self.zones:
             return QueryKind.ZONE
         return QueryKind.METRICS
+
+    @property
+    def is_multi_country(self) -> bool:
+        """Чи це запит по СПИСКУ країн (≥2) — окремий шлях обробки."""
+        return len(self.countries) >= 2
 
     @property
     def has_metric_filters(self) -> bool:
@@ -212,7 +227,9 @@ class DonorQuery:
         """Рядок «Запит:» у картці результату."""
         parts: list[str] = []
 
-        if self.country:
+        if self.is_multi_country:
+            parts.append(f"{len(self.countries)} країн")
+        elif self.country:
             parts.append(f"{self.country.name_uk} ({self.country.zones_label})")
         if self.language:
             parts.append(f"мова {self.language.name_uk}")

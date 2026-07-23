@@ -17,7 +17,7 @@ from __future__ import annotations
 import html
 import time
 
-from app.analytics.engine import Aggregate, QueryResult
+from app.analytics.engine import Aggregate, MultiCountryResult, QueryResult
 from app.analytics.recommendations import Recommendations
 
 
@@ -224,6 +224,67 @@ def render_result(result: QueryResult, *, recommendations: Recommendations | Non
         lines.append(block)
 
     return "\n".join(lines)
+
+
+def render_multi_country(result: MultiCountryResult) -> str:
+    """Картка запиту по СПИСКУ країн: розклад + унікальний підсумок.
+
+    Порядок: база й запит → розклад по країнах (спадання) → «Разом унікальних»
+    (і, якщо є перетин, рядок про різницю) → середні по унікальному набору →
+    нерозпізнані назви.
+    """
+    if not result.available:
+        return (
+            f"🗂 <b>База:</b> {escape(result.section_title)}\n\n"
+            f"⚠️ База тимчасово недоступна.\n<i>{escape(result.error or '')}</i>"
+        )
+
+    lines = [
+        f"🗂 <b>База:</b> {escape(result.section_title)}",
+        f"🔎 <b>Запит:</b> {escape(result.query.describe())}",
+    ]
+    if result.stale:
+        lines.append("")
+        lines.append(_stale_note(result.as_of))
+
+    lines.append("")
+    lines.append("🌍 <b>Розклад по країнах:</b>")
+    for country, count in result.per_country:
+        lines.append(f"  {country.flag} {escape(country.name_uk)} — {number(count)}")
+
+    lines.append("")
+    lines.append(f"✅ <b>Разом унікальних донорів:</b> {number(result.unique.count)}")
+    if result.has_overlap:
+        # Країни зі спільною мовою ділять донорів на нейтральних зонах —
+        # чесно показуємо, що проста сума завищена.
+        lines.append(
+            f"<i>сума по країнах {number(result.sum_counts)}, унікальних "
+            f"{number(result.unique.count)} — різниця через донорів, "
+            f"що належать кільком країнам</i>"
+        )
+
+    if result.unique.count:
+        lines.append("")
+        lines.extend(_metrics_block(result.unique, tracks_spam=result.tracks_spam))
+        lines.append("")
+        lines.append(_error_note(result.unique))
+    else:
+        lines.append("")
+        lines.append("За цими параметрами донорів не знайдено.")
+
+    if result.unrecognized:
+        lines.append("")
+        lines.append(
+            "⚠️ <b>Не впізнав як країну:</b> "
+            + ", ".join(escape(name) for name in result.unrecognized)
+        )
+
+    return "\n".join(lines)
+
+
+def render_multi_summary(result: MultiCountryResult) -> str:
+    """Короткий підсумок запиту-списку для журналу дій (без доменів)."""
+    return f"Список {len(result.per_country)} країн: разом унікальних {result.unique.count}"
 
 
 def render_language_offers(result: QueryResult) -> list[str]:

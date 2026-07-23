@@ -17,13 +17,23 @@ from dataclasses import dataclass
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 
-from app.analytics.engine import QueryResult, run_query
+from app.analytics.engine import (
+    MAX_MULTI_COUNTRIES,
+    QueryResult,
+    run_multi_country,
+    run_query,
+)
 from app.analytics.query import DonorQuery
 from app.analytics.recommendations import Recommendations, build_recommendations
 from app.bot.context import BotServices
 from app.bot.keyboards import back_to_menu, result_menu
 from app.logging_setup import get_logger
-from app.text.cards import render_result, render_summary
+from app.text.cards import (
+    render_multi_country,
+    render_multi_summary,
+    render_result,
+    render_summary,
+)
 
 logger = get_logger(__name__)
 
@@ -61,12 +71,19 @@ async def show_result(
     services: BotServices,
     query: DonorQuery,
     user_id: int,
-) -> ExecutedQuery:
+) -> ExecutedQuery | None:
     """Рахує запит і показує картку з кнопками.
 
     Спершу з'являється повідомлення «Рахую...», потім воно замінюється
     результатом — так користувач бачить, що бот працює (ТЗ, розділ 27).
+
+    Запит по СПИСКУ країн має інший вигляд відповіді (розклад по країнах +
+    унікальний підсумок), тому йде окремим шляхом.
     """
+    if query.is_multi_country:
+        await show_multi_country(target, services, query, user_id)
+        return None
+
     message = target.message if isinstance(target, CallbackQuery) else target
     if message is None:
         raise RuntimeError("Немає повідомлення, у яке можна відповісти")
@@ -94,6 +111,45 @@ async def show_result(
         ),
     )
     return executed
+
+
+async def show_multi_country(
+    target: Message | CallbackQuery,
+    services: BotServices,
+    query: DonorQuery,
+    user_id: int,
+) -> None:
+    """Рахує й показує запит по СПИСКУ країн: розклад + унікальний підсумок."""
+    message = target.message if isinstance(target, CallbackQuery) else target
+    if message is None:
+        raise RuntimeError("Немає повідомлення, у яке можна відповісти")
+
+    if len(query.countries) > MAX_MULTI_COUNTRIES:
+        await message.answer(
+            f"У списку забагато країн ({len(query.countries)}). За один запит — "
+            f"не більше {MAX_MULTI_COUNTRIES}. Зменшіть список і спробуйте ще раз.",
+            reply_markup=back_to_menu(),
+        )
+        return
+
+    status = await message.answer(STATUS_TEXT)
+
+    try:
+        dataset = await services.repository.get(query.section_key)
+        result = await asyncio.to_thread(
+            run_multi_country, dataset, query, unrecognized=query.unrecognized
+        )
+    except Exception:
+        logger.exception("Не вдалося виконати запит по списку країн")
+        await status.edit_text(
+            "⚠️ Не вдалося виконати запит. Спробуйте ще раз або почніть спочатку: /start",
+            reply_markup=back_to_menu(),
+        )
+        return
+
+    # У журнал — лише зведене число, без доменів.
+    services.action_log.add(user_id, render_multi_summary(result))
+    await status.edit_text(render_multi_country(result), reply_markup=back_to_menu())
 
 
 async def safe_edit(
