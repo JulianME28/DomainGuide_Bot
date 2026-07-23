@@ -24,7 +24,11 @@ from app.analytics.engine import (
     run_query,
 )
 from app.analytics.query import DonorQuery
-from app.analytics.recommendations import Recommendations, build_recommendations
+from app.analytics.recommendations import (
+    Recommendations,
+    build_recommendations,
+    list_neighbours,
+)
 from app.bot.context import BotServices
 from app.bot.keyboards import back_to_menu, result_menu
 from app.logging_setup import get_logger
@@ -136,9 +140,7 @@ async def show_multi_country(
 
     try:
         dataset = await services.repository.get(query.section_key)
-        result = await asyncio.to_thread(
-            run_multi_country, dataset, query, unrecognized=query.unrecognized
-        )
+        result, suggestions = await asyncio.to_thread(_compute_multi, dataset, query)
     except Exception:
         logger.exception("Не вдалося виконати запит по списку країн")
         await status.edit_text(
@@ -149,7 +151,23 @@ async def show_multi_country(
 
     # У журнал — лише зведене число, без доменів.
     services.action_log.add(user_id, render_multi_summary(result))
-    await status.edit_text(render_multi_country(result), reply_markup=back_to_menu())
+    await status.edit_text(
+        render_multi_country(result, suggestions=suggestions), reply_markup=back_to_menu()
+    )
+
+
+# Суміжні країни показуємо лише для КОРОТКОГО списку — інакше блок задовгий.
+MULTI_SUGGESTIONS_LIMIT = 7
+
+
+def _compute_multi(dataset, query: DonorQuery):
+    """Синхронна частина мультизапиту: підрахунок + суміжні (в окремому потоці)."""
+    result = run_multi_country(dataset, query, unrecognized=query.unrecognized)
+    # Суміжні — лише коли країн МЕНШЕ 7 (2..6): для довшого списку це шум.
+    suggestions = (
+        list_neighbours(dataset, query) if len(query.countries) < MULTI_SUGGESTIONS_LIMIT else ()
+    )
+    return result, suggestions
 
 
 async def resolve_with_ai(services: BotServices, user_id: int, text: str) -> DonorQuery | None:

@@ -17,8 +17,8 @@ from __future__ import annotations
 import html
 import time
 
-from app.analytics.engine import Aggregate, MultiCountryResult, QueryResult
-from app.analytics.recommendations import Recommendations
+from app.analytics.engine import Aggregate, CountrySplit, MultiCountryResult, QueryResult
+from app.analytics.recommendations import Recommendations, Suggestion
 
 
 def escape(text: str) -> str:
@@ -129,20 +129,26 @@ def _metrics_block(core: Aggregate, *, tracks_spam: bool = False) -> list[str]:
     return lines
 
 
-def _found_count(result: QueryResult) -> str:
-    """Рядок «Знайдено донорів». Для запиту про країну — з розкладом складових:
-    «5 (.fr 3 | мова 0 | GEO 2)». GEO-складову показуємо лише коли база її має."""
-    split = result.split
-    if split is None:
-        return str(result.core.count)
+def format_country_split(split: CountrySplit) -> str:
+    """Розклад однієї країни: «5 (.fr 3 | мова 0 | GEO 2)».
 
+    Мовну складову ховаємо для спільних мов (там її немає в підсумку), GEO —
+    лише коли база має цю колонку. Використовується і в картці однієї країни,
+    і в розкладі мультизапиту, щоб формат був однаковий."""
     parts = [f"{escape(split.main_zone)} {split.zone}"]
-    # Складову «мова» ховаємо для спільних мов — там її немає в підсумку.
     if split.show_language:
         parts.append(f"мова {split.language}")
     if split.show_geo:
         parts.append(f"GEO {split.geo}")
     return f"{split.total} ({' | '.join(parts)})"
+
+
+def _found_count(result: QueryResult) -> str:
+    """Рядок «Знайдено донорів». Для запиту про країну — з розкладом складових."""
+    split = result.split
+    if split is None:
+        return str(result.core.count)
+    return format_country_split(split)
 
 
 def _error_note(core: Aggregate) -> str:
@@ -226,12 +232,15 @@ def render_result(result: QueryResult, *, recommendations: Recommendations | Non
     return "\n".join(lines)
 
 
-def render_multi_country(result: MultiCountryResult) -> str:
-    """Картка запиту по СПИСКУ країн: розклад + унікальний підсумок.
+def render_multi_country(
+    result: MultiCountryResult,
+    *,
+    suggestions: tuple[Suggestion, ...] = (),
+) -> str:
+    """Картка запиту по СПИСКУ країн: ексклюзивний розклад по країнах.
 
-    Порядок: база й запит → розклад по країнах (спадання) → «Разом унікальних»
-    (і, якщо є перетин, рядок про різницю) → середні по унікальному набору →
-    нерозпізнані назви.
+    Порядок: база й запит → розклад по країнах (спадання, з розкладом складових)
+    → пояснення про ексклюзивність → «Разом» → середні → суміжні → нерозпізнані.
     """
     if not result.available:
         return (
@@ -249,19 +258,16 @@ def render_multi_country(result: MultiCountryResult) -> str:
 
     lines.append("")
     lines.append("🌍 <b>Розклад по країнах:</b>")
-    for country, count in result.per_country:
-        lines.append(f"  {country.flag} {escape(country.name_uk)} — {number(count)}")
+    for country, split in result.per_country:
+        lines.append(f"  {country.flag} {escape(country.name_uk)} — {format_country_split(split)}")
 
     lines.append("")
-    lines.append(f"✅ <b>Разом унікальних донорів:</b> {number(result.unique.count)}")
-    if result.has_overlap:
-        # Країни зі спільною мовою ділять донорів на нейтральних зонах —
-        # чесно показуємо, що проста сума завищена.
-        lines.append(
-            f"<i>сума по країнах {number(result.sum_counts)}, унікальних "
-            f"{number(result.unique.count)} — різниця через донорів, "
-            f"що належать кільком країнам</i>"
-        )
+    lines.append(f"✅ <b>Разом донорів:</b> {number(result.unique.count)}")
+    # Пояснення саме для мультизапиту — у картці однієї країни його немає.
+    lines.append(
+        "<i>ℹ️ Кожен донор врахований лише в одній країні, тому числа менші, "
+        "ніж якщо питати країну окремо.</i>"
+    )
 
     if result.unique.count:
         lines.append("")
@@ -271,6 +277,11 @@ def render_multi_country(result: MultiCountryResult) -> str:
     else:
         lines.append("")
         lines.append("За цими параметрами донорів не знайдено.")
+
+    if suggestions:
+        rows = "\n".join(f"  • {escape(s.label)} — {s.count}" for s in suggestions)
+        lines.append("")
+        lines.append(f"🗺 <b>Суміжні країни (яких немає в списку):</b>\n{rows}")
 
     if result.unrecognized:
         lines.append("")

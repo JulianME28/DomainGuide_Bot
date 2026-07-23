@@ -235,23 +235,23 @@ class QueryResult:
 class MultiCountryResult:
     """Результат запиту по СПИСКУ країн. Тільки числа, донорів тут немає.
 
-    Ключова тонкість — два різні числа:
-      * sum_counts — проста сума кількостей по країнах. Завищена, бо країни
-        зі спільною мовою (Німеччина/Австрія/Швейцарія) ділять тих самих
-        донорів на нейтральних зонах.
-      * unique.count — скільки РІЗНИХ донорів належать хоча б одній країні
-        списку. Саме це чесне «Разом». Середні теж рахуються по цьому набору.
+    Розподіл ЕКСКЛЮЗИВНИЙ: кожен донор належить рівно ОДНІЙ країні зі списку —
+    тій, чия претензія найсильніша за водоспадом (зона > GEO > мова), а при
+    рівному пріоритеті — країні, що стоїть раніше в запиті. Тому сума кількостей
+    по країнах дорівнює загальній кількості унікальних донорів (`unique.count`),
+    і жоден донор не рахується двічі.
     """
 
     section_title: str
     query: DonorQuery
-    per_country: tuple[tuple[Country, int], ...]
-    """(країна, кількість) — відсортовано за спаданням кількості."""
+    per_country: tuple[tuple[Country, CountrySplit], ...]
+    """(країна, розклад складових) — відсортовано за спаданням кількості.
+
+    CountrySplit несе зону/мову/GEO цієї країни в ЕКСКЛЮЗИВНОМУ розподілі."""
 
     unique: Aggregate
-    """Підрахунки по УНІКАЛЬНОМУ набору донорів (належать ≥1 країні списку)."""
+    """Підрахунки по всьому набору донорів (кожен рівно раз)."""
 
-    sum_counts: int
     unrecognized: tuple[str, ...] = ()
     """Назви зі списку, які не вдалося впізнати як країну."""
 
@@ -260,11 +260,6 @@ class MultiCountryResult:
     tracks_spam: bool = False
     stale: bool = False
     as_of: float | None = None
-
-    @property
-    def has_overlap(self) -> bool:
-        """Чи є донори, що належать кільком країнам (сума > унікальних)."""
-        return self.sum_counts > self.unique.count
 
 
 # ---------------------------------------------------------------------------
@@ -417,6 +412,28 @@ def _in_country_total(donor: Donor, country) -> bool:
     if bucket == "lang_global":
         return not _is_widespread(country)
     return False
+
+
+# Пріоритет складової водоспаду → назва букета. Менший пріоритет — сильніший.
+_CLAIM_BUCKET = {0: "zone", 1: "geo", 2: "language"}
+
+
+def _country_claim(donor: Donor, country, widespread: bool) -> int | None:
+    """Наскільки СИЛЬНО донор претендує на країну — для ексклюзивного розподілу.
+
+    0 — зона (найсильніше), 1 — GEO, 2 — мова на нейтральній зоні (лише для
+    однозначних мов). None — не претендує. Це той самий водоспад, лише як
+    число-пріоритет: у мультизапиті донор дістається країні з найменшим
+    пріоритетом, а при рівності пріоритетів — тій, що раніше в запиті.
+    """
+    bucket = _country_bucket(donor, country)
+    if bucket == "zone":
+        return 0
+    if bucket == "geo":
+        return 1
+    if bucket == "lang_global" and not widespread:
+        return 2
+    return None
 
 
 def passes_result(donor: Donor, query: DonorQuery) -> bool:
@@ -661,9 +678,9 @@ def run_multi_country(
     сама ідея, що у _country_totals рекомендацій (правка 747dfb6), а не окремий
     прохід на кожну країну.
 
-    Належність до країни — той самий трикроковий водоспад, що й у одно-
-    країновому запиті (`_in_country_total`), тому числа сходяться з тим, що
-    показала б кожна країна окремо. Метрики застосовуються до всіх країн.
+    Розподіл ЕКСКЛЮЗИВНИЙ: кожен донор дістається одній країні за пріоритетом
+    водоспаду (зона > GEO > мова), при рівному — країні, раніше в запиті. Тому
+    сума по країнах = кількість унікальних донорів, без подвійного рахунку.
     """
     if not dataset.available:
         return MultiCountryResult(
@@ -671,7 +688,6 @@ def run_multi_country(
             query=query,
             per_country=(),
             unique=Aggregate(count=0),
-            sum_counts=0,
             unrecognized=unrecognized,
             available=False,
             error=dataset.error,
@@ -679,34 +695,64 @@ def run_multi_country(
         )
 
     query = normalize_query(dataset, query)
-    countries = query.countries
+    # Порядок країн у запиті — це і є правило розв'язання нічиїх.
+    specs = [(country, _is_widespread(country)) for country in query.countries]
 
-    counts = {country.code: 0 for country in countries}
-    unique_donors: list[Donor] = []
+    # По кожній країні окремо рахуємо складові зона/мова/GEO (в ексклюзиві).
+    zone_counts = {country.code: 0 for country, _ in specs}
+    language_counts = {country.code: 0 for country, _ in specs}
+    geo_counts = {country.code: 0 for country, _ in specs}
+    assigned: list[Donor] = []
 
     for donor in dataset.donors:
         if not passes_metrics(donor, query):
             continue
-        belongs = False
-        for country in countries:
-            if _in_country_total(donor, country):
-                counts[country.code] += 1
-                belongs = True
-        # Донора рахуємо в унікальний набір РАЗ, навіть якщо він підійшов
-        # кільком країнам — саме тут зникає подвійний рахунок.
-        if belongs:
-            unique_donors.append(donor)
+        best_key: tuple[int, int] | None = None
+        best_code: str | None = None
+        best_bucket: str | None = None
+        for index, (country, widespread) in enumerate(specs):
+            claim = _country_claim(donor, country, widespread)
+            if claim is None:
+                continue
+            key = (claim, index)  # (пріоритет складової, позиція в запиті)
+            if best_key is None or key < best_key:
+                best_key, best_code, best_bucket = key, country.code, _CLAIM_BUCKET[claim]
+        if best_code is None:
+            continue
+        if best_bucket == "zone":
+            zone_counts[best_code] += 1
+        elif best_bucket == "geo":
+            geo_counts[best_code] += 1
+        else:
+            language_counts[best_code] += 1
+        assigned.append(donor)
 
     per_country = tuple(
-        sorted(((c, counts[c.code]) for c in countries), key=lambda pair: pair[1], reverse=True)
+        sorted(
+            (
+                (
+                    country,
+                    CountrySplit(
+                        zone=zone_counts[country.code],
+                        language=language_counts[country.code],
+                        geo=geo_counts[country.code],
+                        main_zone=country.main_zone,
+                        show_geo=dataset.tracks_geo,
+                        show_language=not widespread,
+                    ),
+                )
+                for country, widespread in specs
+            ),
+            key=lambda pair: pair[1].total,
+            reverse=True,
+        )
     )
 
     return MultiCountryResult(
         section_title=dataset.title,
         query=query,
         per_country=per_country,
-        unique=aggregate(unique_donors),
-        sum_counts=sum(counts.values()),
+        unique=aggregate(assigned),
         unrecognized=unrecognized,
         tracks_spam=dataset.tracks_spam,
         stale=dataset.stale,

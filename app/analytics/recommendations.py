@@ -201,6 +201,35 @@ def same_language_suggestions(dataset: Dataset, query: DonorQuery) -> tuple[Sugg
     return _country_suggestions(candidates, _country_totals(dataset, query, candidates), query)
 
 
+def list_neighbours(dataset: Dataset, query: DonorQuery) -> tuple[Suggestion, ...]:
+    """Суміжні країни для запиту-СПИСКУ: спільномовні + регіональні сусіди.
+
+    Кандидати збираються по КОЖНІЙ країні списку (та сама мова або той самий
+    регіон) і об'єднуються, з яких прибираються країни, що вже є в запиті —
+    пропонувати те, що вже питали, немає сенсу. Кількості — трикроковим
+    підсумком за ОДИН прохід, з тими самими метричними фільтрами.
+    """
+    countries = query.countries
+    if not countries:
+        return ()
+
+    in_list = {country.code for country in countries}
+    candidates: list = []
+    seen: set[str] = set()
+    for country in countries:
+        neighbours = (
+            *countries_with_language(country.primary_language, exclude=country.code),
+            *countries_in_region(country.region, exclude=country.code),
+        )
+        for neighbour in neighbours:
+            if neighbour.code not in in_list and neighbour.code not in seen:
+                seen.add(neighbour.code)
+                candidates.append(neighbour)
+
+    counts = _country_totals(dataset, query, tuple(candidates))
+    return _country_suggestions(tuple(candidates), counts, query)
+
+
 def same_region_suggestions(dataset: Dataset, query: DonorQuery) -> tuple[Suggestion, ...]:
     """Суміжні гео того самого регіону (ТЗ, розділ 13.1)."""
     country = query.country
