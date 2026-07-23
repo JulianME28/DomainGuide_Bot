@@ -53,6 +53,11 @@ class Dimension(StrEnum):
     Не плутати з COUNTRY: країна визначається за доменною зоною + мовою, а GEO —
     це окрема колонка «(cc, N)»."""
 
+    ZONE = "zone"
+    """Запит ЛИШЕ по доменній зоні («у зоні .co.uk») — без водоспаду.
+    Не плутати з COUNTRY: там зона це тільки перший крок, до якого додаються
+    GEO й мова; тут рахуються виключно донори з доменом у цій зоні."""
+
 
 # Назви вимірів у знахідному відмінку — для кнопок «❌ Прибрати мову».
 DIMENSION_ACCUSATIVE: dict[str, str] = {
@@ -63,6 +68,7 @@ DIMENSION_ACCUSATIVE: dict[str, str] = {
     Dimension.OUTLINKS: "вихідні лінки",
     Dimension.SPAM: "заспамленість",
     Dimension.GEO: "гео",
+    Dimension.ZONE: "зону",
 }
 
 
@@ -168,6 +174,8 @@ class DonorQuery:
             filled.add(Dimension.SPAM)
         if self.geo is not None:
             filled.add(Dimension.GEO)
+        if self.zones:
+            filled.add(Dimension.ZONE)
         return frozenset(filled)
 
     @property
@@ -201,6 +209,8 @@ class DonorQuery:
             return self.replace(spam_min=None, spam_max=None)
         if dimension == Dimension.GEO:
             return self.replace(geo=None)
+        if dimension == Dimension.ZONE:
+            return self.replace(zones=())
         return self
 
     # -- що саме фільтруємо --------------------------------------------------
@@ -245,8 +255,10 @@ class DonorQuery:
             parts.append(f"{self.country.name_uk} ({self.country.zones_label})")
         if self.language:
             parts.append(f"мова {self.language.name_uk}")
+        # Режим «тільки зона»: пишемо всі ccTLD через «/», щоб було видно, що
+        # це саме доменна зона (а не країна з водоспадом).
         if not self.country and self.zones:
-            parts.append(f"зона {', '.join(self.zones)}")
+            parts.append(f"зона {' / '.join(self.zones)}")
         # GEO — окремий фільтр по колонці трафіку. Підпис «гео», щоб не сплутати
         # з доменною зоною країни.
         if self.geo:

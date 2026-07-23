@@ -112,6 +112,7 @@ async def show_result(
         reply_markup=result_menu(
             query.section_key,
             has_recommendations=not executed.recommendations.is_empty,
+            has_country=query.country is not None,
         ),
     )
     return executed

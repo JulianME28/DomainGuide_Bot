@@ -70,8 +70,11 @@ class TestРеальніЗапити:
         assert parsed.query.kind is QueryKind.METRICS
 
     def test_запит_із_зоною(self):
+        """«в зоні .de» — це модифікатор ЗОНИ: рахуємо лише зону, без водоспаду."""
         parsed = parse_free_text("донори в зоні .de з трафіком від 50")
-        assert parsed.query.country is country_by_code("de")
+        assert parsed.query.zones == (".de",)
+        assert parsed.query.country is None, "«у зоні X» — не країновий запит"
+        assert parsed.query.kind is QueryKind.ZONE
         assert parsed.query.traffic_min == 50
 
 

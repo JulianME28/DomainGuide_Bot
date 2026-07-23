@@ -112,6 +112,14 @@ SPECS: tuple[DimensionSpec, ...] = (
         stems=("мов", "language", "languages"),
         numeric=False,
     ),
+    # Запит лише по доменній зоні. Саме ЗНАЧЕННЯ («зона .co.uk») дістає
+    # freeform._extract_zone — тут вимір потрібен, щоб працювали спільні
+    # фрази скасування («зона не важлива», «будь-яка зона»).
+    DimensionSpec(
+        Dimension.ZONE,
+        stems=("зон", "zone"),
+        numeric=False,
+    ),
     DimensionSpec(
         Dimension.TRAFFIC,
         stems=("трафік", "трафик", "traffic", "відвідуван"),

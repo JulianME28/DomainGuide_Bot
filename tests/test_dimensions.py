@@ -275,6 +275,7 @@ class TestМеханізм:
         assert active_dimensions() == {
             Dimension.COUNTRY,
             Dimension.LANGUAGE,
+            Dimension.ZONE,
             Dimension.TRAFFIC,
             Dimension.DR,
             Dimension.OUTLINKS,

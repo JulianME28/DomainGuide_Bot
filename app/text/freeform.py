@@ -45,9 +45,15 @@ import re
 from dataclasses import dataclass
 
 from app.analytics.query import Dimension, DonorQuery
-from app.dictionary.normalize import normalize_text
+from app.dictionary.countries import country_by_zone
+from app.dictionary.normalize import find_zone_mentions, normalize_text
 from app.dictionary.resolver import find_all_countries, find_country_match, scan_entities
 from app.text.dimensions import SPECS, active_dimensions, resolve_dimensions
+
+# Модифікатори запиту ЛИШЕ по доменній зоні: після них іде зона («.co.uk») або
+# назва країни («Британія» → усі її ccTLD).
+# «зона X», «у зоні X», «в зоні X», «доменна зона X», «тільки зона X», «лише зона X».
+_ZONE_MODIFIER = re.compile(r"\b(?:тільки\s+|лише\s+|доменн\w*\s+|домен\s+)?(?:[ув]\s+)?зон\w*")
 
 # Модифікатори GEO-фільтра: після них іде НАЗВА КРАЇНИ походження трафіку.
 # «гео Польща», «geo Poland», «за гео Німеччина», «трафік з Польщі».
@@ -91,6 +97,48 @@ def _extract_geo(text: str) -> tuple[object, bool, str]:
             text = _mask(text, modifier.start(), offset + found[1].end)
 
     return geo_country, cancelled, text
+
+
+def _zones_of(zone: str) -> tuple[str, ...]:
+    """Усі ccTLD країни, якій належить зона. Для глобальної — вона сама.
+
+    «.co.uk» → («.co.uk», «.uk»): користувач просить доменну зону Британії, а в
+    неї їх дві, і рахувати треба обидві (інакше число не збіжиться із зоновою
+    складовою країнової картки). «.com» нікому не належить — лишається сама."""
+    owner = country_by_zone(zone)
+    return tuple(owner.zones) if owner is not None else (zone,)
+
+
+def _extract_zone(text: str) -> tuple[tuple[str, ...], str]:
+    """Витягує запит «лише по зоні» з нормалізованого тексту.
+
+    Повертає (зони, текст без цієї фрази). Знайдене затираємо, щоб «.co.uk»
+    після «у зоні» не перетворилося ще й на країновий запит із водоспадом.
+    Фрази скасування («зона не важлива») тут НЕ обробляються — це робить
+    спільний механізм resolve_dimensions.
+    """
+    modifier = _ZONE_MODIFIER.search(text)
+    if modifier is None:
+        return (), text
+
+    raw_tail = text[modifier.end() :]
+    stripped = raw_tail.lstrip()
+    offset = modifier.end() + (len(raw_tail) - len(stripped))
+    head = stripped.split(",", 1)[0]
+
+    # 1) Явна зона: «у зоні .co.uk». find_zone_mentions не нормалізує текст,
+    # тому позиції збігаються з head.
+    mentions = find_zone_mentions(head)
+    if mentions:
+        zone, _start, end = mentions[0]
+        return _zones_of(zone), _mask(text, modifier.start(), offset + end)
+
+    # 2) Назва країни: «зона Британія» → усі її ccTLD.
+    found = find_country_match(head, allow_short=False)
+    if found is not None and found[0].zones:
+        return tuple(found[0].zones), _mask(text, modifier.start(), offset + found[1].end)
+
+    return (), text
 
 
 # Як користувач може назвати кожну базу.
@@ -187,6 +235,10 @@ def parse_free_text(text: str, *, default_section: str = "magic") -> ParsedQuery
     geo_country, geo_cancelled, normalized = _extract_geo(normalized)
     geo = None if geo_cancelled else geo_country
 
+    # Крок 0b: запит ЛИШЕ по зоні («у зоні .co.uk»). Теж витягуємо до розбору
+    # країни — інакше «.co.uk» пішов би країновим запитом із водоспадом.
+    explicit_zones, normalized = _extract_zone(normalized)
+
     # Крок 1: спільний механізм. Повертає що знайдено по кожному виміру
     # і текст, з якого розібране вже прибрано.
     matches, remaining = resolve_dimensions(normalized)
@@ -205,6 +257,13 @@ def parse_free_text(text: str, *, default_section: str = "magic") -> ParsedQuery
 
     country = None if cancelled_dimension(Dimension.COUNTRY) else entities.country
     language = None if cancelled_dimension(Dimension.LANGUAGE) else entities.language
+
+    # Явна зона перемагає країну: користувач попросив саме зону, без водоспаду.
+    zone_cancelled = cancelled_dimension(Dimension.ZONE)
+    if zone_cancelled:
+        explicit_zones = ()
+    if explicit_zones:
+        country = None
     dr_min, dr_max = limits(Dimension.DR)
     traffic_min, traffic_max = limits(Dimension.TRAFFIC)
     outlinks_min, outlinks_max = limits(Dimension.OUTLINKS)
@@ -218,7 +277,8 @@ def parse_free_text(text: str, *, default_section: str = "magic") -> ParsedQuery
 
     # СПИСОК країн (≥2 в одному запиті) — окремий шлях: розклад по країнах і
     # унікальний підсумок. Метричні фільтри застосовуються до всіх країн.
-    if not cancelled_dimension(Dimension.COUNTRY):
+    # Якщо явно попросили зону — це не список країн, а запит по зоні.
+    if not cancelled_dimension(Dimension.COUNTRY) and not explicit_zones:
         countries_all, leftover = find_all_countries(remaining)
         if len(countries_all) >= 2:
             unrecognized = _unrecognized_names(leftover)
@@ -253,9 +313,15 @@ def parse_free_text(text: str, *, default_section: str = "magic") -> ParsedQuery
         country=country,
         language=language,
         geo=geo,
-        # Явні глобальні зони («.com») теж є фільтром — але лише коли країни
-        # не назвали, інакше вони суперечили б одна одній.
-        zones=() if (country or cancelled_dimension(Dimension.COUNTRY)) else entities.global_zones,
+        # Явно попрошена зона («у зоні .co.uk») — найсильніша. Інакше беремо
+        # глобальні зони («.com»), але лише коли країни не назвали, бо разом
+        # вони суперечили б одна одній.
+        zones=explicit_zones
+        or (
+            ()
+            if (country or cancelled_dimension(Dimension.COUNTRY) or zone_cancelled)
+            else entities.global_zones
+        ),
         dr_min=dr_min,
         dr_max=dr_max,
         traffic_min=traffic_min,
@@ -279,6 +345,8 @@ def parse_free_text(text: str, *, default_section: str = "magic") -> ParsedQuery
         mentioned.add(Dimension.GEO)
     if geo_cancelled:
         cancelled.add(Dimension.GEO)
+    if explicit_zones:
+        mentioned.add(Dimension.ZONE)
 
     # Скасування — теж зрозумілий намір, а не «нічого не зрозуміло».
     understood = bool(mentioned or section_named)

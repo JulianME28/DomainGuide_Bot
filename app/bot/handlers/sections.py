@@ -334,6 +334,23 @@ async def show_geo_breakdown(
     await callback.answer()
 
 
+@router.callback_query(F.data == "res:zoneonly")
+async def show_zone_only(callback: CallbackQuery, services: BotServices, state: FSMContext) -> None:
+    """«Тільки доменна зона» — той самий запит, але без водоспаду.
+
+    Країновий підсумок = зона + GEO + мова. Тут лишається сама зона (усі ccTLD
+    країни), решта фільтрів запиту зберігається."""
+    query = await _current_query(state)
+    if query is None or query.country is None:
+        await callback.answer("Спочатку зробіть запит по країні", show_alert=True)
+        return
+
+    zone_query = query.replace(country=None, zones=tuple(query.country.zones))
+    await state.update_data(**query_to_state(zone_query))
+    await callback.answer()
+    await show_result(callback, services, zone_query, callback.from_user.id)
+
+
 @router.callback_query(F.data == "res:lang")
 async def show_language_breakdown(
     callback: CallbackQuery, services: BotServices, state: FSMContext

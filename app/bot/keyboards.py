@@ -95,18 +95,31 @@ def country_picker(section_key: str) -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
-def result_menu(section_key: str, *, has_recommendations: bool = True) -> InlineKeyboardMarkup:
-    """Кнопки під карткою результату (ТЗ, розділ 25)."""
+def result_menu(
+    section_key: str,
+    *,
+    has_recommendations: bool = True,
+    has_country: bool = False,
+) -> InlineKeyboardMarkup:
+    """Кнопки під карткою результату (ТЗ, розділ 25).
+
+    has_country — чи це запит про КРАЇНУ. Тоді додається кнопка «Тільки доменна
+    зона»: вона перезапускає той самий запит без водоспаду (без GEO і мови),
+    щоб звузити до самої зони одним дотиком."""
     builder = InlineKeyboardBuilder()
     if has_recommendations:
         builder.button(text="🔎 Підібрати близькі донори", callback_data="res:nearby")
+    if has_country:
+        builder.button(text="🔗 Тільки доменна зона", callback_data="res:zoneonly")
     builder.button(text="🌍 Уточнити гео в цій групі", callback_data="res:geo")
     builder.button(text="🗣 Розподіл по мовах", callback_data="res:lang")
     builder.button(text="➕ Додати фільтр", callback_data="res:filter")
     builder.button(text="🔄 Новий запит", callback_data=f"menu:section:{section_key}")
     builder.button(text="⬅️ До меню", callback_data="menu:main")
 
-    builder.adjust(1, 1, 1, 1, 2)
+    # Усі кнопки по одній у рядок, крім останньої пари («Новий запит» + «До меню»).
+    singles = 3 + int(has_recommendations) + int(has_country)
+    builder.adjust(*([1] * singles), 2)
     return builder.as_markup()
 
 
