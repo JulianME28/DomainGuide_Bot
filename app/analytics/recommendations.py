@@ -47,8 +47,7 @@ from app.dictionary.zones import is_global_zone
 
 # Наскільки пом'якшуємо вимоги в підказках.
 DR_RELAXATION = 10  # DR: поріг на ±10
-TRAFFIC_DIVIDER = 2  # трафік і вихідні лінки: поріг ÷2 (min) або ×2 (max)
-SPAM_RELAXATION = 10  # заспамленість: поріг на ±10 відсоткових пунктів
+TRAFFIC_DIVIDER = 2  # трафік, вихідні лінки й заспамленість: ÷2 (min) або ×2 (max)
 
 # Скільки суміжних гео показувати, щоб не завалити користувача списком.
 MAX_SUGGESTIONS = 6
@@ -269,8 +268,8 @@ def _relax_metrics(query: DonorQuery) -> tuple[DonorQuery, list[str]]:
     """Будує запит зі зниженими метричними порогами й описує, що саме знижено.
 
     Послаблення РОЗШИРЮЄ діапазон: нижній поріг («від») опускаємо, верхній
-    («до») піднімаємо. DR — на 10, трафік і вихідні лінки — удвічі,
-    заспамленість — на 10 відсоткових пунктів.
+    («до») піднімаємо. DR — на 10; трафік, вихідні лінки й заспамленість
+    (усі три — лічильники) — удвічі.
 
     Повертає (пом'якшений запит, список фраз «метрика від/до X замість Y»).
     Порожній список означає, що послаблювати не було чого — і рядка запасу
@@ -297,8 +296,8 @@ def _relax_metrics(query: DonorQuery) -> tuple[DonorQuery, list[str]]:
     loosen_max("traffic_max", "трафік", (query.traffic_max or 0) * TRAFFIC_DIVIDER)
     loosen_min("outlinks_min", "вихідні лінки", (query.outlinks_min or 0) / TRAFFIC_DIVIDER)
     loosen_max("outlinks_max", "вихідні лінки", (query.outlinks_max or 0) * TRAFFIC_DIVIDER)
-    loosen_min("spam_min", "заспамленість", max(0.0, (query.spam_min or 0) - SPAM_RELAXATION))
-    loosen_max("spam_max", "заспамленість", min(100.0, (query.spam_max or 0) + SPAM_RELAXATION))
+    loosen_min("spam_min", "заспамленість", (query.spam_min or 0) / TRAFFIC_DIVIDER)
+    loosen_max("spam_max", "заспамленість", (query.spam_max or 0) * TRAFFIC_DIVIDER)
 
     return query.replace(**changes), labels
 

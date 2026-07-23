@@ -88,7 +88,8 @@ class DonorQuery:
 
     spam_min: float | None = None
     spam_max: float | None = None
-    """Фільтр по заспамленості у ВІДСОТКАХ (0–100)."""
+    """Фільтр по заспамленості в АБСОЛЮТНІЙ КІЛЬКОСТІ заспамлених лінків
+    (штуки), а не у відсотках. «Заспамленість до 40» = до 40 заспамлених."""
 
     # -- вид запиту ----------------------------------------------------------
 
@@ -227,7 +228,7 @@ class DonorQuery:
         if self.outlinks_min is not None or self.outlinks_max is not None:
             parts.append(_describe_range("вихідних лінків", self.outlinks_min, self.outlinks_max))
         if self.spam_min is not None or self.spam_max is not None:
-            parts.append(_describe_range("заспамленість %", self.spam_min, self.spam_max))
+            parts.append(_describe_range("заспамленість", self.spam_min, self.spam_max))
 
         return ", ".join(part for part in parts if part) or "без фільтрів"
 

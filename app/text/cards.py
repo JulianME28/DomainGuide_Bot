@@ -84,25 +84,47 @@ def percent(value: float | None) -> str:
     return f"{int(value + 0.5)}%"
 
 
-def _metrics_block(core: Aggregate, *, tracks_spam: bool = False) -> list[str]:
-    """Рядки з середніми показниками.
+def _zeros_note(zeros: int) -> str:
+    """Приписка «(з яких =0 — N)» — лише коли нулі справді є.
 
-    Для «Морд» (tracks_spam=True) додаються вихідні лінки й заспамленість —
-    у тому самому форматі, що DR і трафік. Для «Меджика» блок незмінний.
+    Нуль входить у середнє й тягне його вниз, але на око його не видно.
+    Порожні значення сюди НЕ рахуються — це різні речі: 0 є в даних, а
+    порожнє — це «невідомо»."""
+    return f" <i>(з яких =0 — {zeros})</i>" if zeros else ""
+
+
+def _spam_distribution_line(distribution: tuple[tuple[str, int], ...]) -> str:
+    """Рядок розподілу заспамленості: «12 (0), 26 (1-20), 45 (21-50)…».
+
+    Перше число — скільки донорів у групі, у дужках — діапазон заспамлених
+    лінків. Це РОЗПОДІЛ (а не середнє), тому й підпис інший."""
+    if not distribution:
+        return "🧪 <b>Заспамленість (донорів за к-стю лінків):</b> <i>немає даних</i>"
+    parts = ", ".join(f"{number(count)} ({label})" for label, count in distribution)
+    return f"🧪 <b>Заспамленість (донорів за к-стю лінків):</b> {parts}"
+
+
+def _metrics_block(core: Aggregate, *, tracks_spam: bool = False) -> list[str]:
+    """Рядки з показниками групи.
+
+    Біля кожного середнього — приписка про нулі, коли вони є. Для «Морд»
+    (tracks_spam=True) додаються вихідні лінки й РОЗПОДІЛ заспамленості за
+    абсолютною кількістю. Для «Меджика» спам/вихідних немає.
     """
     lines = [
-        f"📊 <b>Середній DR:</b> {number(core.avg_dr)}",
-        f"📈 <b>Середній трафік:</b> {number(core.avg_traffic)}",
+        f"📊 <b>Середній DR:</b> {number(core.avg_dr)}{_zeros_note(core.dr_zeros)}",
+        f"📈 <b>Середній трафік:</b> {number(core.avg_traffic)}{_zeros_note(core.traffic_zeros)}",
     ]
 
     if core.avg_dr is None and core.avg_traffic is None:
         lines.append("<i>У цій групі не заповнені ні DR, ні трафік.</i>")
 
     if tracks_spam:
-        lines.append(f"🔗 <b>Середня к-сть вихідних лінків:</b> {number(core.avg_outlinks)}")
-        lines.append(f"🧪 <b>Середня заспамленість:</b> {percent(core.avg_spam_percent)}")
-        if core.avg_spam_percent is None:
-            lines.append("<i>Заспамленість не порахувати: у цих донорів немає вихідних лінків.</i>")
+        lines.append(
+            f"🔗 <b>Середня к-сть вихідних лінків:</b> "
+            f"{number(core.avg_outlinks)}{_zeros_note(core.outlinks_zeros)}"
+        )
+        lines.append(_spam_distribution_line(core.spam_distribution))
 
     return lines
 

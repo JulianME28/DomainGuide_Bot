@@ -65,6 +65,16 @@ MIN_RELIABLE_SAMPLE = 3
 # Якщо середній DR або трафік нижчий за це — група слабка (ТЗ, розділ 7.6).
 WEAK_METRIC_THRESHOLD = 3
 
+# Групи розподілу за АБСОЛЮТНОЮ кількістю заспамлених лінків.
+# Кожен запис — (підпис, нижня межа, верхня межа|None). Порядок сталий.
+SPAM_GROUPS: tuple[tuple[str, int, int | None], ...] = (
+    ("0", 0, 0),
+    ("1-20", 1, 20),
+    ("21-50", 21, 50),
+    ("51-100", 51, 100),
+    ("100+", 101, None),
+)
+
 
 @dataclass(frozen=True, slots=True)
 class Aggregate:
@@ -78,13 +88,20 @@ class Aggregate:
 
     traffic_sample: int = 0
 
-    # Аналіз заспамленості («Морди»). Для «Меджика» лишаються None/0.
+    # Скільки донорів мають РІВНО 0 (не порожньо!) у метриці. Нуль входить у
+    # середнє й тягне його вниз, а на око його не видно — тому рахуємо окремо.
+    dr_zeros: int = 0
+    traffic_zeros: int = 0
+    outlinks_zeros: int = 0
+
+    # Аналіз заспамленості («Морди»). Для «Меджика» лишаються None/().
     avg_outlinks: float | None = None
-    avg_spam_percent: float | None = None
     outlinks_sample: int = 0
-    spam_sample: int = 0
-    """На скількох донорах порахована середня заспамленість. Донори з 0
-    вихідних лінків сюди не входять — у них відсоток невизначений."""
+
+    spam_distribution: tuple[tuple[str, int], ...] = ()
+    """Розподіл донорів за АБСОЛЮТНОЮ кількістю заспамлених лінків, групами
+    «0 / 1-20 / 21-50 / 51-100 / 100+». Групи з нулем донорів не включені.
+    Донори з порожнім значенням спаму сюди не потрапляють."""
 
     @property
     def min_estimate(self) -> int:
@@ -102,16 +119,12 @@ class Aggregate:
         """Чи середні порахували на надто малій кількості донорів.
 
         Враховуються лише ті показники, які реально є: для «Меджика»
-        outlinks_sample і spam_sample дорівнюють 0, тож у перевірку не
-        потрапляють, і поведінка «Меджика» не змінюється.
+        outlinks_sample дорівнює 0, тож у перевірку не потрапляє, і
+        поведінка «Меджика» не змінюється.
         """
         if self.count == 0:
             return False
-        samples = [
-            s
-            for s in (self.dr_sample, self.traffic_sample, self.outlinks_sample, self.spam_sample)
-            if s > 0
-        ]
+        samples = [s for s in (self.dr_sample, self.traffic_sample, self.outlinks_sample) if s > 0]
         if not samples:
             return True
         return min(samples) < MIN_RELIABLE_SAMPLE
@@ -238,16 +251,17 @@ def _in_range(value: float | None, minimum: float | None, maximum: float | None)
 def passes_metrics(donor: Donor, query: DonorQuery) -> bool:
     """Чи проходить донор усі числові фільтри: DR, трафік, вихідні, спам.
 
-    Заспамленість фільтрується по ВІДСОТКУ. Донор із 0 вихідних лінків має
-    невизначений відсоток (spam_percent = None), тому при заданому фільтрі
-    по заспамленості він не проходить — так само, як донор без DR не
+    Заспамленість фільтрується по АБСОЛЮТНІЙ КІЛЬКОСТІ заспамлених лінків
+    (donor.spammed), а не по відсотку. «Заспамленість до 40» = до 40
+    заспамлених лінків. Донор із порожнім значенням спаму (spammed = None)
+    при заданому фільтрі не проходить — так само, як донор без DR не
     проходить фільтр по DR.
     """
     return (
         _in_range(donor.dr, query.dr_min, query.dr_max)
         and _in_range(donor.traffic, query.traffic_min, query.traffic_max)
         and _in_range(donor.outlinks, query.outlinks_min, query.outlinks_max)
-        and _in_range(donor.spam_percent, query.spam_min, query.spam_max)
+        and _in_range(donor.spammed, query.spam_min, query.spam_max)
     )
 
 
@@ -399,11 +413,40 @@ def _build_offer(country, donors: list[Donor]) -> LanguageAddendum | None:
 # ---------------------------------------------------------------------------
 
 
+def spam_distribution(donors: list[Donor]) -> tuple[tuple[str, int], ...]:
+    """Розподіл донорів за кількістю ЗАСПАМЛЕНИХ лінків, групами.
+
+    Правило «0,0» (навмисне, не помилка): якщо і вихідних лінків 0, і
+    заспамлених 0 — це непрацюючий сайт, дані по якому просто не оновились.
+    Такого донора зараховуємо в найгіршу групу «100+».
+
+    Донори з порожнім значенням спаму (spammed = None) у групи не потрапляють
+    і підрахунок не ламають. Групи з нулем донорів у результат не входять.
+    """
+    counts = {label: 0 for label, _low, _high in SPAM_GROUPS}
+
+    for donor in donors:
+        spammed = donor.spammed
+        if spammed is None:
+            continue  # порожнє значення — не в групи
+        if donor.outlinks == 0 and spammed == 0:
+            counts["100+"] += 1  # правило «0,0» — непрацюючий сайт
+            continue
+        for label, low, high in SPAM_GROUPS:
+            if spammed >= low and (high is None or spammed <= high):
+                counts[label] += 1
+                break
+
+    return tuple((label, counts[label]) for label, _low, _high in SPAM_GROUPS if counts[label])
+
+
 def aggregate(donors: list[Donor]) -> Aggregate:
-    """Рахує кількість і середні по групі донорів.
+    """Рахує кількість, середні й розподіли по групі донорів.
 
     Донори з «n/a» рахуються в кількості, але в середні не входять — інакше
-    середній DR був би заниженим через нулі, яких насправді немає.
+    середній DR був би заниженим через нулі, яких насправді немає. Окремо
+    рахуємо, скільки донорів мають РІВНО 0: нуль у середнє входить і тягне
+    його вниз, тому його варто показати поруч.
     """
     if not donors:
         return Aggregate(count=0)
@@ -411,11 +454,12 @@ def aggregate(donors: list[Donor]) -> Aggregate:
     dr_values = [d.dr for d in donors if d.dr is not None]
     traffic_values = [d.traffic for d in donors if d.traffic is not None]
     outlinks_values = [d.outlinks for d in donors if d.outlinks is not None]
-    # Заспамленість — тільки там, де відсоток визначений (вихідних > 0).
-    spam_values = [d.spam_percent for d in donors if d.spam_percent is not None]
 
     def average(values: list[float]) -> float | None:
         return round(sum(values) / len(values), 1) if values else None
+
+    def zeros(values: list[float]) -> int:
+        return sum(1 for v in values if v == 0)
 
     return Aggregate(
         count=len(donors),
@@ -423,10 +467,12 @@ def aggregate(donors: list[Donor]) -> Aggregate:
         avg_traffic=average(traffic_values),
         dr_sample=len(dr_values),
         traffic_sample=len(traffic_values),
+        dr_zeros=zeros(dr_values),
+        traffic_zeros=zeros(traffic_values),
+        outlinks_zeros=zeros(outlinks_values),
         avg_outlinks=average(outlinks_values),
-        avg_spam_percent=average(spam_values),
         outlinks_sample=len(outlinks_values),
-        spam_sample=len(spam_values),
+        spam_distribution=spam_distribution(donors),
     )
 
 
