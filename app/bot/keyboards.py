@@ -132,6 +132,19 @@ def result_menu(
     return builder.as_markup()
 
 
+def both_bases_menu(bases: list[tuple[str, str]]) -> InlineKeyboardMarkup:
+    """Кнопки під зведеним повідомленням по обох базах.
+
+    bases — список (ключ, назва). Для кожної — кнопка «Детально по …», що
+    відкриває повну картку саме цієї бази з усіма додатковими блоками."""
+    builder = InlineKeyboardBuilder()
+    for key, title in bases:
+        builder.button(text=f"📊 Детально по {title}", callback_data=f"res:detail:{key}")
+    builder.button(text="⬅️ До меню", callback_data="menu:main")
+    builder.adjust(*([1] * len(bases)), 1)
+    return builder.as_markup()
+
+
 # ---------------------------------------------------------------------------
 # Майстер-запит
 # ---------------------------------------------------------------------------

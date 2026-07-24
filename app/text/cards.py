@@ -441,6 +441,50 @@ def render_breakdown(title: str, rows: tuple[tuple[str, int], ...]) -> str:
     return f"<b>{escape(title)}</b>\n{body}"
 
 
+def render_compact_block(result: QueryResult, *, dropped_alt_base: str | None = None) -> str:
+    """Компактний блок ОДНІЄЇ бази для зведеного показу по обох базах.
+
+    Лише найпотрібніше: назва бази, «Знайдено донорів» із розкладом, попередження
+    про відкинутий фільтр, середні (для «Морд» — і вихідні/заспамленість) та
+    похибку. Великих блоків (суміжні країни, ядро+запас, мовні пропозиції) тут
+    НЕ показуємо — по них є кнопка «Детально».
+    """
+    if not result.available:
+        return (
+            f"🗂 <b>{escape(result.section_title)}</b> — тимчасово недоступна.\n"
+            f"<i>{escape((result.error or '')[:150])}</i>"
+        )
+
+    core = result.core
+    lines = [f"🗂 <b>{escape(result.section_title)}</b>"]
+    if result.stale:
+        lines.append(_stale_note(result.as_of))
+    lines.append(f"✅ <b>Знайдено донорів:</b> {_found_count(result)}")
+
+    unsupported = render_unsupported_note(
+        result.dropped_dimensions, result.section_title, dropped_alt_base
+    )
+    if unsupported:
+        lines.append(unsupported)
+
+    if core.count:
+        lines.extend(_metrics_block(core, tracks_spam=result.tracks_spam))
+        lines.append(_error_note(core))
+    else:
+        lines.append("<i>За цими параметрами донорів не знайдено.</i>")
+
+    return "\n".join(lines)
+
+
+def render_both_bases(query, blocks: list[str]) -> str:
+    """Зведене повідомлення по обох базах: спільний рядок запиту + блоки баз."""
+    header = [
+        f"🔎 <b>Запит:</b> {escape(query.describe())}",
+        "<i>Базу не вказано — перевіряю обидві.</i>",
+    ]
+    return f"\n\n{'─' * 12}\n\n".join(["\n".join(header), *blocks])
+
+
 def render_unavailable(result: QueryResult) -> str:
     """Повідомлення, коли база недоступна. Бот пояснює, а не мовчить."""
     reason = escape(result.error or "причина невідома")

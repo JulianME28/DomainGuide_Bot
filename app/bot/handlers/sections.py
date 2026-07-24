@@ -13,7 +13,13 @@ from aiogram.types import CallbackQuery, Message
 
 from app.analytics.query import DonorQuery
 from app.bot.context import BotServices
-from app.bot.execution import execute, resolve_with_ai, safe_edit, show_result
+from app.bot.execution import (
+    execute,
+    resolve_with_ai,
+    safe_edit,
+    show_both_bases,
+    show_result,
+)
 from app.bot.keyboards import (
     back_to_menu,
     cancel_only,
@@ -299,6 +305,11 @@ async def receive_free_text(message: Message, services: BotServices, state: FSMC
 
     await state.set_state(None)
     await state.update_data(**query_to_state(parsed.query, parsed.mentioned))
+
+    # Базу не назвали явно — зведено по обох базах (список країн не роздвоюємо).
+    if not parsed.section_named and not parsed.query.is_multi_country:
+        await show_both_bases(message, services, parsed.query, message.from_user.id)
+        return
     await show_result(message, services, parsed.query, message.from_user.id)
 
 
@@ -310,6 +321,25 @@ async def receive_free_text(message: Message, services: BotServices, state: FSMC
 async def _current_query(state: FSMContext) -> DonorQuery | None:
     data = await state.get_data()
     return query_from_state(data) if data.get("section_key") else None
+
+
+@router.callback_query(F.data.startswith("res:detail:"))
+async def show_base_detail(
+    callback: CallbackQuery, services: BotServices, state: FSMContext
+) -> None:
+    """«Детально по …» під зведеним показом — повна картка вибраної бази.
+
+    Той самий запит зі збереженими фільтрами, лише виконаний в одній базі."""
+    section_key = callback.data.split(":")[2]
+    query = await _current_query(state)
+    if query is None:
+        await callback.answer("Спочатку зробіть запит", show_alert=True)
+        return
+
+    detailed = query.replace(section_key=section_key)
+    await state.update_data(**query_to_state(detailed))
+    await callback.answer()
+    await show_result(callback, services, detailed, callback.from_user.id)
 
 
 @router.callback_query(F.data == "res:geo")

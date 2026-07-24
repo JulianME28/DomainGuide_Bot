@@ -16,7 +16,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
 
 from app.bot.context import BotServices
-from app.bot.execution import resolve_with_ai, show_result
+from app.bot.execution import resolve_with_ai, show_both_bases, show_result
 from app.bot.keyboards import back_to_menu, cancel_only
 from app.bot.states import Ask, query_to_state
 from app.text.freeform import CLARIFICATION_TEXT, parse_free_text
@@ -55,6 +55,12 @@ async def handle_free_text(message: Message, services: BotServices, state: FSMCo
     # Новий вільний запит замінює попередній повністю: свіжим вважається
     # рівно те, про що сказали в цьому повідомленні.
     await state.update_data(**query_to_state(parsed.query, parsed.mentioned))
+
+    # Базу не назвали явно — показуємо обидві бази одним зведеним повідомленням.
+    # (Список країн має власний вигляд відповіді, тож його не роздвоюємо.)
+    if not parsed.section_named and not parsed.query.is_multi_country:
+        await show_both_bases(message, services, parsed.query, message.from_user.id)
+        return
     await show_result(message, services, parsed.query, message.from_user.id)
 
 

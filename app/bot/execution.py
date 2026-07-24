@@ -30,9 +30,11 @@ from app.analytics.recommendations import (
     list_neighbours,
 )
 from app.bot.context import BotServices
-from app.bot.keyboards import back_to_menu, result_menu
+from app.bot.keyboards import back_to_menu, both_bases_menu, result_menu
 from app.logging_setup import get_logger
 from app.text.cards import (
+    render_both_bases,
+    render_compact_block,
     render_multi_country,
     render_multi_summary,
     render_result,
@@ -105,6 +107,57 @@ async def execute(services: BotServices, query: DonorQuery) -> ExecutedQuery:
             dropped_alt_base=alt_base[1] if alt_base else None,
         ),
         alt_base=alt_base,
+    )
+
+
+def data_bases(services: BotServices) -> list[tuple[str, str]]:
+    """Бази, які реально читають дані: (ключ, назва). «Сабміти»-заглушку пропускаємо."""
+    return [
+        (section.key, section.title)
+        for section in services.columns.sections.values()
+        if section.reads_data
+    ]
+
+
+async def show_both_bases(
+    target: Message | CallbackQuery,
+    services: BotServices,
+    query: DonorQuery,
+    user_id: int,
+) -> None:
+    """Зведений показ по ОБОХ базах — коли базу в запиті не назвали.
+
+    Кожна база — окремим компактним блоком (без великих додаткових блоків),
+    унизу кнопки «Детально по …» на повну картку відповідної бази."""
+    message = target.message if isinstance(target, CallbackQuery) else target
+    if message is None:
+        raise RuntimeError("Немає повідомлення, у яке можна відповісти")
+
+    bases = data_bases(services)
+    status = await message.answer(STATUS_TEXT)
+
+    try:
+        blocks: list[str] = []
+        for key, _title in bases:
+            per_base = query.replace(section_key=key)
+            dataset = await services.repository.get(key)
+            # Без розподілів — компактному блоку вони не потрібні.
+            result = await asyncio.to_thread(run_query, dataset, per_base, with_breakdowns=False)
+            alt = _alt_base_for(services, result)
+            blocks.append(render_compact_block(result, dropped_alt_base=alt[1] if alt else None))
+    except Exception:
+        logger.exception("Не вдалося виконати запит по обох базах")
+        await status.edit_text(
+            "⚠️ Не вдалося виконати запит. Спробуйте ще раз або почніть спочатку: /start",
+            reply_markup=back_to_menu(),
+        )
+        return
+
+    # У журнал — лише зведений опис запиту, без доменів.
+    services.action_log.add(user_id, f"обидві бази: {query.describe()}")
+    await status.edit_text(
+        render_both_bases(query, blocks),
+        reply_markup=both_bases_menu(bases),
     )
 
 
