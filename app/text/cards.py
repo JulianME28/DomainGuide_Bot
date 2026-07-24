@@ -485,12 +485,28 @@ def render_compact_block(result: QueryResult, *, dropped_alt_base: str | None = 
 
 
 def render_both_bases(query, blocks: list[str]) -> str:
-    """Зведене повідомлення по обох базах: спільний рядок запиту + блоки баз."""
+    """Зведене повідомлення по обох базах: спільний рядок запиту + блоки баз.
+
+    Фраза-прохання стосується РОЗБОРУ запиту, а не бази, тож пояснення про неї —
+    один раз у шапці, а не в кожному блоці. Суміжні країни у зведення не йдуть
+    (вони у повній картці за кнопкою «Детально»), тож про них — окрема підказка."""
     header = [
         f"🔎 <b>Запит:</b> {escape(query.describe())}",
         "<i>Базу не вказано — перевіряю обидві.</i>",
     ]
-    return f"\n\n{'─' * 12}\n\n".join(["\n".join(header), *blocks])
+    if query.request_hint:
+        header.append(
+            f"ℹ️ <i>Фразу «{escape(query.request_hint)}» я зрозумів як прохання показати "
+            f"схожі варіанти, а не як фільтр.</i>"
+        )
+
+    body = f"\n\n{'─' * 12}\n\n".join(["\n".join(header), *blocks])
+    if query.request_hint:
+        body += (
+            "\n\n💡 <i>Суміжні країни-варіанти — у детальній картці "
+            "(кнопка «📊 Детально по …»).</i>"
+        )
+    return body
 
 
 def render_unavailable(result: QueryResult) -> str:

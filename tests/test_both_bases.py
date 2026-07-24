@@ -214,11 +214,25 @@ class TestХендлер:
         assert "Розклад по країнах" in text
         assert text.count("Знайдено донорів") == 0  # це мультикартка, не зведення
 
-    async def test_прохання_дає_повну_картку_не_зведення(self, both_services):
-        """Запит із маркером-проханням (без бази) — повна картка, не два блоки."""
+    async def test_прохання_без_бази_теж_два_блоки(self, both_services):
+        """Маркер-прохання без бази НЕ робить винятку — те саме зведення."""
         from app.bot.handlers.freeform import handle_free_text
 
         message = FakeMessage(text="Нова Зеландія; якщо мало — англомовні альтернативи")
+        await handle_free_text(message, both_services, FakeState({}))
+        text, markup = _shown(message)
+        assert text.count("Знайдено донорів") == 2
+        assert "res:detail:magic" in _codes(markup)
+        assert "res:detail:mordy" in _codes(markup)
+        # Пояснення про прохання — рівно ОДИН раз (у шапці, не в кожному блоці).
+        assert text.count("зрозумів як прохання показати схожі варіанти") == 1
+        assert "у детальній картці" in text  # підказка про суміжні
+
+    async def test_прохання_з_явною_базою_повна_картка(self, both_services):
+        """Явна база + маркер → одна повна картка з поясненням, як раніше."""
+        from app.bot.handlers.freeform import handle_free_text
+
+        message = FakeMessage(text="Морди Нова Зеландія; якщо мало — альтернативи")
         await handle_free_text(message, both_services, FakeState({}))
         text, markup = _shown(message)
         assert text.count("Знайдено донорів") == 1  # одна повна картка
