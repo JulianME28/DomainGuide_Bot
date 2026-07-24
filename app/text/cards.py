@@ -245,6 +245,14 @@ def render_result(
         lines.append("")
         lines.append(unsupported)
 
+    # Фраза-прохання: чесно кажемо, що зрозуміли її як прохання, а не фільтр.
+    if result.query.request_hint:
+        lines.append("")
+        lines.append(
+            f"ℹ️ <i>Фразу «{escape(result.query.request_hint)}» я зрозумів як прохання "
+            f"показати схожі варіанти, а не як фільтр.</i>"
+        )
+
     if core.count:
         lines.append("")
         lines.extend(_metrics_block(core, tracks_spam=result.tracks_spam))

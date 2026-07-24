@@ -57,8 +57,9 @@ async def handle_free_text(message: Message, services: BotServices, state: FSMCo
     await state.update_data(**query_to_state(parsed.query, parsed.mentioned))
 
     # Базу не назвали явно — показуємо обидві бази одним зведеним повідомленням.
-    # (Список країн має власний вигляд відповіді, тож його не роздвоюємо.)
-    if not parsed.section_named and not parsed.query.is_multi_country:
+    # (Список країн має власний вигляд; а запит із проханням «покажи альтернативи»
+    # потребує повної картки з блоком суміжних країн, тож теж не роздвоюємо.)
+    if not parsed.section_named and not parsed.query.is_multi_country and not parsed.request_marker:
         await show_both_bases(message, services, parsed.query, message.from_user.id)
         return
     await show_result(message, services, parsed.query, message.from_user.id)

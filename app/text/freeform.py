@@ -50,6 +50,18 @@ from app.dictionary.normalize import find_zone_mentions, normalize_text
 from app.dictionary.resolver import find_all_countries, find_country_match, scan_entities
 from app.text.dimensions import SPECS, active_dimensions, resolve_dimensions
 
+# Фрази-ПРОХАННЯ: слова в тій самій частині речення — це підказка для
+# рекомендацій, а НЕ фільтр. «якщо мало — англомовні альтернативи» просить
+# показати схожі варіанти, а не звужувати вибірку до англомовних.
+_REQUEST_CONDITIONAL = r"якщо\s+(?:мало|замало|недостатньо)"
+_REQUEST_MARKER = re.compile(
+    r"(?:"
+    + _REQUEST_CONDITIONAL
+    + r"|альтернатив\w*|варіант\w*|запропон\w*|підбер\w*\s+схож\w*"
+    + r"|схож\w*\s+варіант\w*|що\s+ще\s+є)"
+)
+_REQUEST_CONDITIONAL_RE = re.compile(_REQUEST_CONDITIONAL)
+
 # Модифікатори запиту ЛИШЕ по доменній зоні: після них іде зона («.co.uk») або
 # назва країни («Британія» → усі її ccTLD).
 # «зона X», «у зоні X», «в зоні X», «доменна зона X», «тільки зона X», «лише зона X».
@@ -75,6 +87,46 @@ _GEO_CANCEL = re.compile(
 
 def _mask(text: str, start: int, end: int) -> str:
     return text[:start] + " " * (end - start) + text[end:]
+
+
+def _clean_request(text: str) -> str:
+    """Прибирає з фрази-прохання провідний зворот «якщо мало» й розділові знаки.
+
+    «якщо мало — англомовні альтернативи» → «англомовні альтернативи»."""
+    text = re.sub(r"^\s*" + _REQUEST_CONDITIONAL + r"\s*", " ", text)
+    text = text.strip(" —–-,:;")
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _extract_request(text: str) -> tuple[str, str, bool]:
+    """Відділяє фрази-прохання від запиту-фільтра.
+
+    Повертає (текст без прохання, впізнана фраза-прохання, чи був маркер).
+    Якщо маркера немає — текст не чіпаємо взагалі. Якщо є — ділимо на частини
+    за «;», комою й переносами рядка: частину з умовним «якщо мало» ріжемо на
+    самому «якщо» (до нього — фільтри, від нього — прохання), а частину з
+    іменником-маркером («альтернативи», «варіанти») вважаємо проханням цілком.
+    Так «Німеччина, варіанти» лишає країну, а «варіанти» йде в прохання.
+    """
+    if not _REQUEST_MARKER.search(text):
+        return text, "", False
+
+    kept: list[str] = []
+    requests: list[str] = []
+    for part in re.split(r"[;,\n]", text):
+        if not _REQUEST_MARKER.search(part):
+            kept.append(part)
+            continue
+        conditional = _REQUEST_CONDITIONAL_RE.search(part)
+        if conditional is not None:
+            kept.append(part[: conditional.start()])
+            requests.append(part[conditional.start() :])
+        else:
+            requests.append(part)
+
+    cleaned = " ".join(part for part in kept if part.strip())
+    hint = _clean_request(" ".join(requests))
+    return cleaned, hint, True
 
 
 def _extract_geo(text: str) -> tuple[object, bool, str]:
@@ -230,6 +282,10 @@ class ParsedQuery:
     unrecognized: tuple[str, ...] = ()
     """Назви зі списку країн, які не вдалося впізнати (лише для запиту-списку)."""
 
+    request_marker: bool = False
+    """Чи був у тексті маркер-прохання («якщо мало», «альтернативи»…). Тоді
+    показуємо повну картку з блоком суміжних країн, а не зведення по обох базах."""
+
     @property
     def needs_clarification(self) -> bool:
         return not self.understood
@@ -253,6 +309,10 @@ def parse_free_text(text: str, *, default_section: str = "magic") -> ParsedQuery
     """
     normalized = normalize_text(text)
     section, section_named = detect_section(text, default_section)
+
+    # Крок 0-: фрази-прохання («якщо мало — англомовні альтернативи»). Прибираємо
+    # НАЙПЕРШИМ, щоб слова прохання не стали фільтрами (напр. «англомовні» — мовою).
+    normalized, request_hint, request_marker = _extract_request(normalized)
 
     # Крок 0: GEO-фільтр («гео Польща»). Витягуємо ПЕРШИМ і затираємо, щоб
     # країна після «гео» не сприйнялася ще й як звичайний країновий запит.
@@ -358,6 +418,7 @@ def parse_free_text(text: str, *, default_section: str = "magic") -> ParsedQuery
             if (country or cancelled_dimension(Dimension.COUNTRY) or zone_cancelled)
             else entities.global_zones
         ),
+        request_hint=request_hint,
         dr_min=dr_min,
         dr_max=dr_max,
         traffic_min=traffic_min,
@@ -384,8 +445,9 @@ def parse_free_text(text: str, *, default_section: str = "magic") -> ParsedQuery
     if explicit_zones:
         mentioned.add(Dimension.ZONE)
 
-    # Скасування — теж зрозумілий намір, а не «нічого не зрозуміло».
-    understood = bool(mentioned or section_named)
+    # Скасування — теж зрозумілий намір, а не «нічого не зрозуміло». Прохання
+    # показати альтернативи — теж намір (навіть без інших фільтрів).
+    understood = bool(mentioned or section_named or request_marker)
 
     return ParsedQuery(
         query=query,
@@ -393,6 +455,7 @@ def parse_free_text(text: str, *, default_section: str = "magic") -> ParsedQuery
         section_named=section_named,
         mentioned=frozenset(mentioned),
         cancelled=frozenset(cancelled),
+        request_marker=request_marker,
     )
 
 

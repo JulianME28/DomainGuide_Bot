@@ -152,3 +152,63 @@ class TestРозбірНеПадає:
     def test_будь_який_текст_розбирається_без_винятку(self, text):
         parsed = parse_free_text(text)
         assert parsed.query is not None
+
+
+class TestФразиПрохання:
+    """Маркери-прохання («якщо мало», «альтернативи») — це підказка для
+    рекомендацій, а НЕ фільтр. Слова після/навколо них не звужують запит."""
+
+    def test_приклад_із_тз(self):
+        """«Нова Зеландія; якщо мало — англомовні альтернативи» — країновий запит
+        БЕЗ мовного фільтра + фраза-прохання окремо."""
+        parsed = parse_free_text("Донори по Новій Зеландії; якщо мало — англомовні альтернативи")
+        assert parsed.query.country is country_by_code("nz")
+        assert parsed.query.language is None, "«англомовні» не має ставати фільтром"
+        assert parsed.request_marker is True
+        assert parsed.query.request_hint == "англомовні альтернативи"
+        assert parsed.query.kind is QueryKind.COUNTRY
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "Нова Зеландія; якщо мало — англомовні альтернативи",
+            "Нова Зеландія; якщо замало, англомовні варіанти",
+            "Нова Зеландія; якщо недостатньо — англомовні",
+            "Нова Зеландія; англомовні альтернативи",
+            "Нова Зеландія; запропонуй схожі",
+            "Нова Зеландія; підбери схожі",
+            "Нова Зеландія; схожі варіанти",
+            "Нова Зеландія; що ще є",
+        ],
+    )
+    def test_маркер_розпізнається_у_різних_формах(self, text):
+        parsed = parse_free_text(text)
+        assert parsed.request_marker is True
+        assert parsed.query.country is country_by_code("nz")
+        assert parsed.query.language is None
+
+    def test_кома_замість_крапки_з_комою(self):
+        """«Німеччина, варіанти» — країна лишається, «варіанти» йде в прохання."""
+        parsed = parse_free_text("Німеччина, варіанти")
+        assert parsed.query.country is country_by_code("de")
+        assert parsed.request_marker is True
+        assert parsed.query.request_hint == "варіанти"
+
+    def test_англійською_без_маркера_це_фільтр(self):
+        """«Морди англійською» без прохання й далі означає фільтр мови."""
+        parsed = parse_free_text("Морди англійською")
+        assert parsed.query.language is language_by_code("en")
+        assert parsed.request_marker is False
+        assert parsed.query.request_hint == ""
+
+    def test_звичайний_запит_не_чіпається(self):
+        """Без маркера текст не ділиться й коми зберігають сенс."""
+        parsed = parse_free_text("Меджик, Британія, трафік від 1")
+        assert parsed.query.country is country_by_code("gb")
+        assert parsed.query.traffic_min == 1
+        assert parsed.request_marker is False
+
+    def test_прохання_це_зрозумілий_запит(self):
+        """Навіть якщо крім прохання нічого не назвали — це не «не зрозумів»."""
+        parsed = parse_free_text("Франція; підбери схожі")
+        assert not parsed.needs_clarification

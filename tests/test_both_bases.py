@@ -214,6 +214,18 @@ class TestХендлер:
         assert "Розклад по країнах" in text
         assert text.count("Знайдено донорів") == 0  # це мультикартка, не зведення
 
+    async def test_прохання_дає_повну_картку_не_зведення(self, both_services):
+        """Запит із маркером-проханням (без бази) — повна картка, не два блоки."""
+        from app.bot.handlers.freeform import handle_free_text
+
+        message = FakeMessage(text="Нова Зеландія; якщо мало — англомовні альтернативи")
+        await handle_free_text(message, both_services, FakeState({}))
+        text, markup = _shown(message)
+        assert text.count("Знайдено донорів") == 1  # одна повна картка
+        assert "res:filter" in _codes(markup)
+        assert not any("res:detail" in c for c in _codes(markup))
+        assert "зрозумів як прохання показати схожі варіанти" in text
+
     async def test_детально_відкриває_повну_картку(self, both_services):
         """Кнопка «Детально по Морди» дає повну картку Морд зі збереженим фільтром."""
         from app.bot.handlers.sections import show_base_detail

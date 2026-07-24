@@ -254,3 +254,25 @@ class TestКомбінованийЗапит:
         assert "Німеччина" in card
         assert "мова німецька" in card
         assert LANGUAGE_MARK not in card, "користувач сам звузив — додаток зайвий"
+
+
+class TestФразаПрохання:
+    """Фразу-прохання бот пояснює й показує суміжні, а не робить фільтром."""
+
+    async def test_пояснювальний_рядок_у_картці(self, magic):
+        query = query_for("de", request_hint="англомовні альтернативи")
+        card = render_result(run_query(magic, query))
+        assert "англомовні альтернативи" in card
+        assert "прохання показати схожі варіанти" in card
+        assert "не як фільтр" in card
+
+    async def test_без_прохання_рядка_немає(self, magic):
+        card = render_result(run_query(magic, query_for("de")))
+        assert "прохання показати схожі варіанти" not in card
+
+    async def test_суміжні_країни_показані(self, magic):
+        """При проханні блок суміжних країн присутній (Німеччина → Австрія/Швейцарія)."""
+        query = query_for("de", request_hint="англомовні альтернативи")
+        recommendations = build_recommendations(magic, query)
+        card = render_result(run_query(magic, query), recommendations=recommendations)
+        assert "Суміжні країни" in card

@@ -306,8 +306,9 @@ async def receive_free_text(message: Message, services: BotServices, state: FSMC
     await state.set_state(None)
     await state.update_data(**query_to_state(parsed.query, parsed.mentioned))
 
-    # Базу не назвали явно — зведено по обох базах (список країн не роздвоюємо).
-    if not parsed.section_named and not parsed.query.is_multi_country:
+    # Базу не назвали явно — зведено по обох базах (список країн і запит із
+    # проханням «покажи альтернативи» не роздвоюємо — їм потрібна повна картка).
+    if not parsed.section_named and not parsed.query.is_multi_country and not parsed.request_marker:
         await show_both_bases(message, services, parsed.query, message.from_user.id)
         return
     await show_result(message, services, parsed.query, message.from_user.id)
