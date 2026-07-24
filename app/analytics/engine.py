@@ -224,6 +224,11 @@ class QueryResult:
     tracks_spam: bool = False
     """Чи показувати в картці вихідні лінки й заспамленість (лише «Морди»)."""
 
+    dropped_dimensions: frozenset[str] = frozenset()
+    """Виміри, фільтр по яких запит мав, а база не має відповідних колонок —
+    тому фільтр мовчки НЕ застосувався. Картка попереджає про це, щоб число не
+    вводило в оману (напр. фільтр заспамленості в «Меджику»)."""
+
     stale: bool = False
     """True, якщо числа з кешу (онлайн-оновлення щойно не вдалося)."""
 
@@ -611,6 +616,26 @@ def normalize_query(dataset: Dataset, query: DonorQuery) -> DonorQuery:
     return query.without(Dimension.OUTLINKS).without(Dimension.SPAM)
 
 
+def unsupported_dimensions(dataset: Dataset, query: DonorQuery) -> frozenset[str]:
+    """Виміри, які запит фільтрує, а база не має для них колонок.
+
+    Саме ці фільтри normalize_query мовчки прибирає. Повертаємо їх, щоб картка
+    могла чесно попередити: «фільтр не застосовано, бо в цій базі таких даних
+    немає». Логіка ДЗЕРКАЛЬНА до normalize_query, щоб перелік точно збігався з
+    тим, що справді відкинуто.
+    """
+    filled = query.filled_dimensions
+    dropped: set[str] = set()
+    if not dataset.tracks_geo and Dimension.GEO in filled:
+        dropped.add(Dimension.GEO)
+    if not dataset.tracks_spam:
+        if Dimension.SPAM in filled:
+            dropped.add(Dimension.SPAM)
+        if Dimension.OUTLINKS in filled:
+            dropped.add(Dimension.OUTLINKS)
+    return frozenset(dropped)
+
+
 def run_query(dataset: Dataset, query: DonorQuery, *, with_breakdowns: bool = True) -> QueryResult:
     """Виконує запит і повертає готові числа.
 
@@ -627,6 +652,8 @@ def run_query(dataset: Dataset, query: DonorQuery, *, with_breakdowns: bool = Tr
             tracks_spam=dataset.tracks_spam,
         )
 
+    # Рахуємо, які фільтри база не потягне, ДО того як normalize_query їх зніме.
+    dropped = unsupported_dimensions(dataset, query)
     query = normalize_query(dataset, query)
 
     # Запит про КРАЇНУ рахується моделлю країни; решта — звичайним ядром.
@@ -668,6 +695,7 @@ def run_query(dataset: Dataset, query: DonorQuery, *, with_breakdowns: bool = Tr
         country_breakdown=country_breakdown(core_donors) if with_breakdowns else (),
         total_in_base=dataset.count,
         tracks_spam=dataset.tracks_spam,
+        dropped_dimensions=dropped,
         stale=dataset.stale,
         as_of=dataset.loaded_at if dataset.stale else None,
     )

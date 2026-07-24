@@ -334,6 +334,24 @@ async def show_geo_breakdown(
     await callback.answer()
 
 
+@router.callback_query(F.data.startswith("res:runin:"))
+async def run_in_base(callback: CallbackQuery, services: BotServices, state: FSMContext) -> None:
+    """«Виконати цей запит у базі X» — той самий запит в іншій базі.
+
+    Потрібно, коли фільтр (напр. заспамленість) відкинуто, бо поточна база не
+    має таких колонок, а інша — має."""
+    section_key = callback.data.split(":")[2]
+    query = await _current_query(state)
+    if query is None:
+        await callback.answer("Спочатку зробіть запит", show_alert=True)
+        return
+
+    new_query = query.replace(section_key=section_key)
+    await state.update_data(**query_to_state(new_query))
+    await callback.answer()
+    await show_result(callback, services, new_query, callback.from_user.id)
+
+
 @router.callback_query(F.data == "res:zoneonly")
 async def show_zone_only(callback: CallbackQuery, services: BotServices, state: FSMContext) -> None:
     """«Тільки доменна зона» — той самий запит, але без водоспаду.

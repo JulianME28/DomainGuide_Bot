@@ -23,7 +23,7 @@ from app.analytics.engine import (
     run_multi_country,
     run_query,
 )
-from app.analytics.query import DonorQuery
+from app.analytics.query import Dimension, DonorQuery
 from app.analytics.recommendations import (
     Recommendations,
     build_recommendations,
@@ -51,6 +51,8 @@ class ExecutedQuery:
     result: QueryResult
     recommendations: Recommendations
     text: str
+    alt_base: tuple[str, str] | None = None
+    """(ключ, назва) бази, де є відкинуті виміри — для кнопки «виконати там»."""
 
 
 def _compute(dataset, query: DonorQuery) -> tuple[QueryResult, Recommendations]:
@@ -58,15 +60,51 @@ def _compute(dataset, query: DonorQuery) -> tuple[QueryResult, Recommendations]:
     return run_query(dataset, query), build_recommendations(dataset, query)
 
 
+def _alt_base_for(services: BotServices, result: QueryResult) -> tuple[str, str] | None:
+    """База, яка МАЄ всі відкинуті виміри запиту (щоб запустити запит там).
+
+    None, якщо відкинутих вимірів немає або жодна інша база їх не покриває.
+    Наприклад, для фільтра заспамленості в «Меджику» поверне ключ і назву «Морд».
+    """
+    dropped = result.dropped_dimensions
+    if not dropped:
+        return None
+
+    for section in services.columns.sections.values():
+        if not section.reads_data or section.key == result.query.section_key:
+            continue
+        if _supports_all(section, dropped):
+            return section.key, section.title
+    return None
+
+
+def _supports_all(section, dimensions: frozenset[str]) -> bool:
+    """Чи має розділ колонки для ВСІХ цих вимірів."""
+    for dimension in dimensions:
+        if dimension == Dimension.SPAM and not section.tracks_spam:
+            return False
+        if dimension == Dimension.OUTLINKS and not section.has_outlinks:
+            return False
+        if dimension == Dimension.GEO and not section.has_geo:
+            return False
+    return True
+
+
 async def execute(services: BotServices, query: DonorQuery) -> ExecutedQuery:
     """Виконує запит і складає картку результату."""
     dataset = await services.repository.get(query.section_key)
     result, recommendations = await asyncio.to_thread(_compute, dataset, query)
 
+    alt_base = _alt_base_for(services, result)
     return ExecutedQuery(
         result=result,
         recommendations=recommendations,
-        text=render_result(result, recommendations=recommendations),
+        text=render_result(
+            result,
+            recommendations=recommendations,
+            dropped_alt_base=alt_base[1] if alt_base else None,
+        ),
+        alt_base=alt_base,
     )
 
 
@@ -113,6 +151,7 @@ async def show_result(
             query.section_key,
             has_recommendations=not executed.recommendations.is_empty,
             has_country=query.country is not None,
+            run_in=executed.alt_base,
         ),
     )
     return executed

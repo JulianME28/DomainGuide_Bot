@@ -18,7 +18,18 @@ import html
 import time
 
 from app.analytics.engine import Aggregate, CountrySplit, MultiCountryResult, QueryResult
+from app.analytics.query import Dimension
 from app.analytics.recommendations import Recommendations, Suggestion
+
+# Назви відкинутих вимірів у формі після «по» — для попередження про те, що
+# фільтр не застосувався (база не має відповідних колонок).
+_UNSUPPORTED_LABEL: dict[str, str] = {
+    Dimension.OUTLINKS: "вихідних лінках",
+    Dimension.SPAM: "заспамленості",
+    Dimension.GEO: "гео",
+}
+# Сталий порядок переліку, щоб рядок не стрибав між показами.
+_UNSUPPORTED_ORDER = (Dimension.OUTLINKS, Dimension.SPAM, Dimension.GEO)
 
 
 def escape(text: str) -> str:
@@ -151,6 +162,37 @@ def _found_count(result: QueryResult) -> str:
     return format_country_split(split)
 
 
+def _join_uk(items: list[str]) -> str:
+    """Перелік українською: «a», «a й b», «a, b й c»."""
+    if len(items) <= 1:
+        return items[0] if items else ""
+    return f"{', '.join(items[:-1])} й {items[-1]}"
+
+
+def render_unsupported_note(
+    dropped: frozenset[str], current_base: str, alt_base: str | None
+) -> str | None:
+    """Попередження: фільтр не застосовано, бо в базі немає таких колонок.
+
+    dropped — виміри, які запит мав, а база не потягнула. alt_base — назва бази,
+    де ці дані Є (щоб було куди перейти); None, якщо такої немає."""
+    if not dropped:
+        return None
+
+    names = [_UNSUPPORTED_LABEL[d] for d in _UNSUPPORTED_ORDER if d in dropped]
+    if not names:
+        return None
+
+    word = "Фільтр" if len(names) == 1 else "Фільтри"
+    note = (
+        f"⚠️ <b>{word} по {_join_uk(names)} не застосовано:</b> "
+        f"у базі {escape(current_base)} немає таких даних."
+    )
+    if alt_base:
+        note += f" Ці показники є лише в базі {escape(alt_base)}."
+    return note
+
+
 def _error_note(core: Aggregate) -> str:
     """Один рядок про похибку: діапазон від нижньої межі до підсумку."""
     return (
@@ -159,7 +201,12 @@ def _error_note(core: Aggregate) -> str:
     )
 
 
-def render_result(result: QueryResult, *, recommendations: Recommendations | None = None) -> str:
+def render_result(
+    result: QueryResult,
+    *,
+    recommendations: Recommendations | None = None,
+    dropped_alt_base: str | None = None,
+) -> str:
     """Головна картка результату.
 
     Порядок блоків:
@@ -169,6 +216,8 @@ def render_result(result: QueryResult, *, recommendations: Recommendations | Non
       4. попередження
       5. примітка про похибку
       6. МОВНИЙ РЯДОК — завжди останній
+
+    dropped_alt_base — назва бази, де є відкинуті виміри (для попередження).
     """
     if not result.available:
         return render_unavailable(result)
@@ -186,6 +235,15 @@ def render_result(result: QueryResult, *, recommendations: Recommendations | Non
 
     lines.append("")
     lines.append(f"✅ <b>Знайдено донорів:</b> {_found_count(result)}")
+
+    # Одразу під числом — попередження, що частина фільтрів не застосувалась
+    # (база не має таких колонок). Інакше число оманливе.
+    unsupported = render_unsupported_note(
+        result.dropped_dimensions, result.section_title, dropped_alt_base
+    )
+    if unsupported:
+        lines.append("")
+        lines.append(unsupported)
 
     if core.count:
         lines.append("")

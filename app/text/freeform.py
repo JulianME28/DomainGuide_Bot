@@ -55,6 +55,13 @@ from app.text.dimensions import SPECS, active_dimensions, resolve_dimensions
 # «зона X», «у зоні X», «в зоні X», «доменна зона X», «тільки зона X», «лише зона X».
 _ZONE_MODIFIER = re.compile(r"\b(?:тільки\s+|лише\s+|доменн\w*\s+|домен\s+)?(?:[ув]\s+)?зон\w*")
 
+# Прикметникові форми заспамленості (так/ні), а не числовий фільтр:
+# «незаспамлені» → заспамленість 0, «заспамлені» → заспамленість > 0.
+# Лукахед (?!іст|ост) відсікає ІМЕННИК у всіх відмінках («заспамленість»,
+# «заспамленості», «заспамленістю») — то числовий вимір / фраза скасування,
+# їх розбирає resolve_dimensions.
+_SPAM_FLAG = re.compile(r"\b(не)?заспамлен(?!іст|ост)\w*")
+
 # Модифікатори GEO-фільтра: після них іде НАЗВА КРАЇНИ походження трафіку.
 # «гео Польща», «geo Poland», «за гео Німеччина», «трафік з Польщі».
 _GEO_MODIFIER = re.compile(r"\b(?:за\s+гео|гео|geo|трафік\w*\s+з|трафік\w*\s+із)\b")
@@ -107,6 +114,23 @@ def _zones_of(zone: str) -> tuple[str, ...]:
     складовою країнової картки). «.com» нікому не належить — лишається сама."""
     owner = country_by_zone(zone)
     return tuple(owner.zones) if owner is not None else (zone,)
+
+
+def _extract_spam_flag(text: str) -> tuple[float | None, float | None, str]:
+    """Розбирає прикметник заспамленості. Повертає (spam_min, spam_max, текст).
+
+    «незаспамлені» → заспамленість = 0 (spam_max=0). «заспамлені» → заспамленість
+    > 0 (spam_min=1, бо це кількість заспамлених лінків). Знайдене затираємо,
+    щоб слово не заважало розбору решти."""
+    match = _SPAM_FLAG.search(text)
+    if match is None:
+        return None, None, text
+
+    negated = match.group(1) is not None
+    text = _mask(text, match.start(), match.end())
+    if negated:
+        return None, 0.0, text
+    return 1.0, None, text
 
 
 def _extract_zone(text: str) -> tuple[tuple[str, ...], str]:
@@ -239,6 +263,9 @@ def parse_free_text(text: str, *, default_section: str = "magic") -> ParsedQuery
     # країни — інакше «.co.uk» пішов би країновим запитом із водоспадом.
     explicit_zones, normalized = _extract_zone(normalized)
 
+    # Крок 0c: прикметник заспамленості («незаспамлені» → 0, «заспамлені» → >0).
+    flag_spam_min, flag_spam_max, normalized = _extract_spam_flag(normalized)
+
     # Крок 1: спільний механізм. Повертає що знайдено по кожному виміру
     # і текст, з якого розібране вже прибрано.
     matches, remaining = resolve_dimensions(normalized)
@@ -268,9 +295,18 @@ def parse_free_text(text: str, *, default_section: str = "magic") -> ParsedQuery
     traffic_min, traffic_max = limits(Dimension.TRAFFIC)
     outlinks_min, outlinks_max = limits(Dimension.OUTLINKS)
     spam_min, spam_max = limits(Dimension.SPAM)
+    # Прикметникова заспамленість діє, лише коли числового фільтра немає.
+    if (
+        spam_min is None
+        and spam_max is None
+        and (flag_spam_min is not None or flag_spam_max is not None)
+    ):
+        spam_min, spam_max = flag_spam_min, flag_spam_max
 
     active = active_dimensions()
     metric_mentions = {dimension for dimension in matches if dimension in active}
+    if flag_spam_min is not None or flag_spam_max is not None:
+        metric_mentions.add(Dimension.SPAM)
     cancelled = {
         dimension for dimension, match in matches.items() if match.cancelled and dimension in active
     }
