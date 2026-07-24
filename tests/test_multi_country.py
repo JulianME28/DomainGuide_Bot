@@ -69,20 +69,21 @@ def make_dataset(donors, *, tracks_geo=True):
 
 class TestЕксклюзивнийРозподіл:
     async def test_розклад_ексклюзивний(self, magic):
-        """glob1/glob2 (німецькою на .com) дістаються лише Німеччині (раніша)."""
+        """Німецька — спільна (de/at/ch), тож мовний крок у підсумок не входить."""
         result = run_multi_country(magic, de_at_ch())
         by_code = {c.code: split for c, split in result.per_country}
-        # Німеччина: зона .de(6) + мова glob1,glob2(2) + GEO es1(1) = 9.
-        assert (by_code["de"].zone, by_code["de"].language, by_code["de"].geo) == (6, 2, 1)
-        assert by_code["de"].total == 9
-        # Австрія/Швейцарія: лише своя зона; спільні .com-донори вже в Німеччині.
+        # Німеччина: зона .de(6) + GEO es1(1) = 7. glob1/glob2 (німецькою на .com)
+        # не приписуються нікому — мова спільна.
+        assert (by_code["de"].zone, by_code["de"].language, by_code["de"].geo) == (6, 0, 1)
+        assert by_code["de"].total == 7
+        assert by_code["de"].show_language is False
         assert by_code["at"].total == 1 and by_code["at"].zone == 1
         assert by_code["ch"].total == 1 and by_code["ch"].zone == 1
 
     async def test_сума_по_країнах_дорівнює_унікальним(self, magic):
         result = run_multi_country(magic, de_at_ch())
         total = sum(split.total for _c, split in result.per_country)
-        assert total == result.unique.count == 11  # без подвійного рахунку
+        assert total == result.unique.count == 9  # 6(зона de)+1(geo)+1(at)+1(ch)
 
     def test_зона_сильніша_за_geo(self):
         """.it із GEO(fr) при «Італія Франція» → Італія (зона > GEO)."""
@@ -95,21 +96,17 @@ class TestЕксклюзивнийРозподіл:
         assert by_code["it"].zone == 1 and by_code["it"].total == 1
         assert by_code["fr"].geo == 0 and by_code["fr"].total == 0
 
-    def test_рівний_пріоритет_виграє_раніша_в_запиті(self):
-        """Німецькою на .com претендує і на Німеччину, і на Австрію → раніша."""
+    def test_спільномовний_донор_не_дістається_нікому(self):
+        """Німецькою на .com — мова СПІЛЬНА, тож донор не в підсумку жодної країни
+        (саме так зникає подвійний рахунок)."""
         d = Donor("g.com", ".com", "german", None, None)
-
-        at_first = DonorQuery(
-            section_key="magic", countries=(country_by_code("at"), country_by_code("de"))
-        )
-        by_at = {c.code: s for c, s in run_multi_country(make_dataset([d]), at_first).per_country}
-        assert by_at["at"].language == 1 and by_at["de"].language == 0
-
-        de_first = DonorQuery(
+        query = DonorQuery(
             section_key="magic", countries=(country_by_code("de"), country_by_code("at"))
         )
-        by_de = {c.code: s for c, s in run_multi_country(make_dataset([d]), de_first).per_country}
-        assert by_de["de"].language == 1 and by_de["at"].language == 0
+        result = run_multi_country(make_dataset([d]), query)
+        by_code = {c.code: s for c, s in result.per_country}
+        assert by_code["de"].total == 0 and by_code["at"].total == 0
+        assert result.unique.count == 0
 
     async def test_сортування_за_спаданням(self, magic):
         query = DonorQuery(
@@ -142,7 +139,7 @@ class TestЕксклюзивнийРозподіл:
         one = DonorQuery(section_key="magic", countries=(country_by_code("de"),))
         multi = run_multi_country(magic, one)
         single = result_count(magic, DonorQuery(section_key="magic", country=country_by_code("de")))
-        assert multi.per_country[0][1].total == single == 9
+        assert multi.per_country[0][1].total == single == 7
         assert multi.unique.count == single
 
 
@@ -151,7 +148,7 @@ class TestКарткаСписку:
         query = de_at_ch().replace(unrecognized=("атлантида",))
         card = render_multi_country(run_multi_country(magic, query, unrecognized=("атлантида",)))
         assert "Розклад по країнах" in card
-        assert "(.de 6 | мова 2 | GEO 1)" in card  # розклад складових у дужках
+        assert "(.de 6 | GEO 1)" in card  # німецька спільна — без складової «мова»
         assert "Разом донорів" in card
         assert "Кожен донор врахований лише в одній країні" in card
         assert "різниця через донорів" not in card  # рядок різниці прибрано
@@ -161,6 +158,14 @@ class TestКарткаСписку:
         card = render_multi_country(run_multi_country(magic, de_at_ch()))
         for donor in magic.donors:
             assert donor.domain not in card
+
+    async def test_немає_донорів_у_двох_країнах_одночасно(self, magic):
+        """DE/AT/CH мають спільну (німецьку) мову — жоден донор не рахується двом.
+
+        Перевіряємо, що ексклюзивний розподіл справді ексклюзивний: сума totals
+        точно дорівнює кількості унікальних донорів."""
+        result = run_multi_country(magic, de_at_ch())
+        assert sum(s.total for _c, s in result.per_country) == result.unique.count
 
 
 class TestСуміжніУСписку:

@@ -111,11 +111,13 @@ class TestФільтри:
         result = run_query(
             magic, DonorQuery(section_key="magic", country=country_by_code("de"), traffic_min=500)
         )
-        # Трикроково з трафіком ≥500:
-        #   зона .de: de1(4800),de2(1200),de3(500),de4(12000) = 4
-        #   мова на GLOBAL: glob1(3000) = 1;  GEO: es1 traffic 320<500 = 0
-        assert result.core.count == 5
+        # Німецька тепер СПІЛЬНА (основна для de/at/ch) — мовний крок НЕ в підсумку.
+        # Підсумок з трафіком ≥500 = зона + GEO:
+        #   зона .de: de1(4800),de2(1200),de3(500),de4(12000) = 4;  GEO: es1(320<500) = 0
+        # glob1(3000) німецькою на .com у split.language рахується, але в підсумок не йде.
+        assert result.core.count == 4
         assert (result.split.zone, result.split.language, result.split.geo) == (4, 1, 0)
+        assert result.split.show_language is False
 
     async def test_запит_без_фільтрів_це_вся_база(self, magic):
         query = DonorQuery(section_key="magic")

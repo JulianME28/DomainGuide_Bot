@@ -26,6 +26,7 @@ from tests.fixtures.fake_data import (
     GERMANY_ADDENDUM,
     GERMANY_GEO,
     GERMANY_LANG,
+    GERMANY_NEUTRAL,
     GERMANY_TOTAL,
     GERMANY_ZONE,
     MORDY_DE_GEO,
@@ -63,13 +64,15 @@ class TestТрикроковийПідсумок:
         assert result.core.count == FRANCE_TOTAL
 
     async def test_німеччина(self, magic):
+        """Німецька — СПІЛЬНА (de/at/ch): підсумок = зона + GEO, мова окремо."""
         result = run_query(magic, country_query("de"))
         assert (result.split.zone, result.split.language, result.split.geo) == (
             GERMANY_ZONE,
             GERMANY_LANG,
             GERMANY_GEO,
         )
-        assert result.split.total == GERMANY_TOTAL == 9
+        assert result.split.show_language is False
+        assert result.split.total == GERMANY_TOTAL == 7  # зона 6 + GEO 1, без мови
 
     async def test_британія_спільна_мова_без_мовної_складової(self, magic):
         """Британія — англійська спільна: підсумок = зона + GEO, БЕЗ мови."""
@@ -97,7 +100,9 @@ class TestБезПодвійногоРахунку:
         zone_d, lang_d, geo_d, _ = classify_country(magic, country_query("de"))
         ids = [id(d) for d in zone_d] + [id(d) for d in lang_d] + [id(d) for d in geo_d]
         assert len(ids) == len(set(ids)), "жоден донор не потрапив у дві групи"
-        assert len(ids) == GERMANY_TOTAL
+        # Букети класифікації не перетинаються (для спільної мови мовний бере
+        # окремий рядок, тож сума букетів більша за підсумок).
+        assert len(ids) == GERMANY_ZONE + GERMANY_LANG + GERMANY_GEO
 
     async def test_de6_зона_у_німеччині_geo_у_франції(self, magic):
         """Приклад із ТЗ: донор .de-зони з GEO (fr, 5000).
@@ -177,7 +182,7 @@ class TestОстаннійРядок:
         assert result.core.count == GERMANY_TOTAL
         assert result.addendum.count == GERMANY_ADDENDUM
         # Ці два числа не сумуються в підсумок.
-        assert result.core.count == GERMANY_TOTAL  # не 9+2
+        assert result.core.count == GERMANY_TOTAL  # не 7+2
 
     async def test_додаток_виключає_врахованих_у_підсумку(self, magic):
         """Донор, який зайшов у підсумок через GEO, у додаток НЕ потрапляє.
@@ -193,10 +198,13 @@ class TestОстаннійРядок:
 
     async def test_додаток_враховує_фільтри_метрик(self, magic):
         result = run_query(magic, country_query("de", dr_min=30))
-        # зона .de dr≥30: de1(40),de4(55),de6(30)=3; мова: glob1(45)=1; geo: es1 dr21<30 =0 → 4
-        assert result.split.total == 4
+        # Німецька спільна → підсумок = зона + GEO. dr≥30:
+        # зона .de: de1(40),de4(55),de6(30)=3; geo: es1 dr21<30=0 → підсумок 3.
+        # мова glob1(45) у split рахується (1), але в total не входить.
+        assert result.split.total == 3
         assert result.split.zone == 3
         assert result.split.language == 1
+        assert result.split.show_language is False
         # додаток German на інших ccTLD dr≥30: at1(35)=1, ch1(20)✗
         assert result.addendum.count == 1
 
@@ -245,8 +253,15 @@ class TestСпільніМовиНеВПідсумку:
         assert result.split.show_language is False
         assert result.neutral_offer.count == SPAIN_NEUTRAL == 1  # glob5.online
 
+    async def test_німеччина_теж_спільна(self, magic):
+        """Німецька основна для de/at/ch → спільна: мовний крок окремим рядком."""
+        result = run_query(magic, country_query("de"))
+        assert result.split.show_language is False
+        assert result.neutral_offer is not None
+        assert result.neutral_offer.count == GERMANY_NEUTRAL == 2  # glob1, glob2
+
     async def test_однозначна_мова_без_нейтрального_рядка(self, magic):
-        assert run_query(magic, country_query("de")).neutral_offer is None
+        # Франція — мова однієї країни: нейтрального рядка немає, мова в підсумку.
         assert run_query(magic, country_query("fr")).neutral_offer is None
 
 
@@ -255,8 +270,13 @@ class TestПопередженняПроСпільніМови:
         # Британія: у додатку англійська — спільна мова, попередження показуємо.
         assert run_query(magic, country_query("gb")).addendum.needs_warning is True
 
-    @pytest.mark.parametrize("code", ["fr", "de"])
+    async def test_німецька_теж_попереджає(self, magic):
+        # Німецька тепер спільна (de/at/ch) — теж попереджаємо.
+        assert run_query(magic, country_query("de")).addendum.needs_warning is True
+
+    @pytest.mark.parametrize("code", ["fr"])
     async def test_однозначні_мови_не_попереджають(self, magic, code):
+        # Мова однієї країни (французька) — без попередження.
         assert run_query(magic, country_query(code)).addendum.needs_warning is False
 
 
@@ -269,8 +289,8 @@ class TestПохибкаВідПідсумку:
 
     async def test_німеччина_похибка(self, magic):
         result = run_query(magic, country_query("de"))
-        assert result.core.count == 9
-        assert result.core.min_estimate == 6  # від 9, не від 6 (зони)
+        assert result.core.count == 7  # спільна мова: зона 6 + GEO 1
+        assert result.core.min_estimate == 5  # (7×7+5)//10 = 5
 
 
 class TestЗапитПроМову:

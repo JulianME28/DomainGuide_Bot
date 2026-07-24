@@ -13,13 +13,14 @@ from app.data.parsing import MULTI_PART_SUFFIXES, extract_zone
 from app.dictionary.countries import (
     ALL_COUNTRY_ZONES,
     COUNTRIES,
+    WIDESPREAD_LANGUAGE_CODES,
     countries_with_language,
     country_by_code,
     country_by_zone,
+    is_widespread_language,
 )
 from app.dictionary.languages import (
     LANGUAGES,
-    WIDESPREAD_CODES,
     display_language,
     language_by_code,
     language_by_data_value,
@@ -65,15 +66,28 @@ class TestСловникМов:
         assert language_by_data_value("Клінгонська") is None
         assert display_language("Клінгонська") == "Клінгонська"
 
-    @pytest.mark.parametrize("code", ["en", "es", "pt", "ar"])
+    # Спільна мова = основна для 2+ країн. Німецька/нідерландська тепер теж тут.
+    @pytest.mark.parametrize("code", ["en", "es", "pt", "ar", "de", "nl"])
     def test_спільні_мови_позначені(self, code):
-        """Цими мовами пишуть багато країн — потрібне попередження."""
+        """Цими мовами пишуть кілька країн — потрібне попередження."""
         assert language_by_code(code).widespread
-        assert code in WIDESPREAD_CODES
+        assert code in WIDESPREAD_LANGUAGE_CODES
+        assert is_widespread_language(code)
 
-    @pytest.mark.parametrize("code", ["fr", "de", "it", "tr", "ja", "pl", "vi"])
+    @pytest.mark.parametrize("code", ["fr", "it", "tr", "ja", "pl", "vi", "uk"])
     def test_однозначні_мови_не_потребують_попередження(self, code):
+        """Мова однієї країни — не спільна, мовний крок входить у підсумок."""
         assert not language_by_code(code).widespread
+        assert not is_widespread_language(code)
+
+    def test_спільність_обчислюється_зі_словника_а_не_списком(self):
+        """WIDESPREAD_LANGUAGE_CODES = рівно ті мови, що основні для 2+ країн."""
+        from collections import Counter
+
+        counts = Counter(c.primary_language for c in COUNTRIES.values())
+        expected = {code for code, n in counts.items() if n >= 2}
+        assert set(WIDESPREAD_LANGUAGE_CODES) == expected
+        assert expected == {"en", "es", "de", "ar", "nl", "pt"}
 
 
 class TestСловникКраїн:

@@ -306,7 +306,7 @@ class TestВиконанняЗапиту:
             services, DonorQuery(section_key="magic", country=country_by_code("de"))
         )
 
-        assert executed.result.core.count == 9  # трикроковий підсумок Німеччини
+        assert executed.result.core.count == 7  # зона 6 + GEO 1 (німецька — спільна)
         assert executed.result.addendum.count == 2
         assert "Знайдено донорів" in executed.text
 

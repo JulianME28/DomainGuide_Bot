@@ -91,9 +91,10 @@ class TestКомбінаціїЗони:
 
 class TestПідрахунокЗони:
     async def test_рахує_лише_зону_без_geo_і_мови(self, magic):
-        """Німеччина країновим запитом = 9 (зона 6 + мова 2 + GEO 1), зоною = 6."""
+        """Німеччина країновим запитом = 7 (зона 6 + GEO 1; німецька спільна),
+        зоною = 6."""
         country = run_query(magic, DonorQuery(section_key="magic", country=country_by_code("de")))
-        assert country.core.count == 9
+        assert country.core.count == 7
         assert country.split.zone == 6
 
         zone = run_query(magic, zone_query("зона .de"))

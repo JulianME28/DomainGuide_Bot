@@ -34,10 +34,10 @@ class TestСуміжніКраїниЗіСпільноюМовою:
         suggestions = {
             s.label.split()[1]: s.count for s in same_language_suggestions(magic, germany())
         }
-        # Трикроково: зона країни + німецька на GLOBAL (glob1, glob2) спільна всім.
-        # Австрія = at1(зона) + glob1,glob2(мова) = 3; Швейцарія = ch1 + 2 = 3.
-        assert suggestions["Австрія"] == 3
-        assert suggestions["Швейцарія"] == 3
+        # Німецька — СПІЛЬНА (de/at/ch), тож мовний крок не входить у підсумок:
+        # Австрія = at1(зона) = 1; Швейцарія = ch1(зона) = 1. glob1/glob2 не рахуються.
+        assert suggestions["Австрія"] == 1
+        assert suggestions["Швейцарія"] == 1
 
     async def test_сама_країна_не_пропонується(self, magic):
         labels = " ".join(s.label for s in same_language_suggestions(magic, germany()))
@@ -56,10 +56,10 @@ class TestСуміжніКраїниЗіСпільноюМовою:
         suggestions = same_language_suggestions(magic, germany(dr_min=30))
         counts = {s.label.split()[1]: s.count for s in suggestions}
 
-        # DR≥30: Австрія = at1(35, зона) + glob1(45, мова) = 2; glob2(15) відсіявся.
-        # Швейцарія = ch1(20, зона ✗) + glob1(45, мова) = 1.
-        assert counts.get("Австрія") == 2
-        assert counts.get("Швейцарія") == 1
+        # Німецька спільна — мовний крок не рахується. DR≥30:
+        # Австрія = at1(35, зона) = 1; Швейцарія = ch1(20, зона ✗) = 0 → не показується.
+        assert counts.get("Австрія") == 1
+        assert "Швейцарія" not in counts
 
 
 class TestПониженняВимог:
@@ -101,13 +101,13 @@ class TestЯдроІЗапас:
         assert reserve_group(magic, germany()) is None
 
     async def test_запас_це_приріст_від_послаблення(self, magic):
-        """DR≥50: у підсумку лише de4(55). Знижуємо до DR≥40 → +de1(40, зона),
-        +glob1(45, мова). Запас = саме ці 2, ядро лишається 1."""
+        """DR≥50: у підсумку лише de4(55). Знижуємо до DR≥40 → +de1(40, зона).
+        glob1(45, німецькою на .com) не рахується — німецька спільна. Запас = 1."""
         group = reserve_group(magic, germany(dr_min=50))
         assert group is not None
         assert group.core_count == 1
-        assert group.reserve_count == 2
-        assert group.total == 3
+        assert group.reserve_count == 1
+        assert group.total == 2
 
     async def test_підпис_містить_фактичні_пороги(self, magic):
         group = reserve_group(magic, germany(dr_min=50))
@@ -117,7 +117,8 @@ class TestЯдроІЗапас:
     async def test_трафік_теж_послаблюється(self, magic):
         group = reserve_group(magic, germany(traffic_min=1000))
         assert group is not None
-        assert group.core_count == 4
+        # Німецька спільна: підсумок = зона + GEO. Трафік ≥1000: de1,de2,de4 = 3.
+        assert group.core_count == 3
         assert group.reserve_count == 1  # de3(500): не ≥1000, але ≥500
         assert "трафік від 500 замість 1000" in group.reserve_label
 

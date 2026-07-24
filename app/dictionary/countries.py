@@ -358,6 +358,26 @@ ALL_COUNTRY_ZONES: frozenset[str] = frozenset(_BY_ZONE)
 """Усі зони, закріплені за країнами."""
 
 
+# «Спільні» мови — ПРАВИЛОМ, а не списком: мова, основна для 2+ країн словника.
+# Саме тут єдине джерело правди про спільність (Language.widespread делегує сюди).
+# Нова країна автоматично робить свою мову спільною, без окремого редагування.
+_PRIMARY_LANGUAGE_COUNTS: dict[str, int] = {}
+for _country in COUNTRIES.values():
+    _PRIMARY_LANGUAGE_COUNTS[_country.primary_language] = (
+        _PRIMARY_LANGUAGE_COUNTS.get(_country.primary_language, 0) + 1
+    )
+
+WIDESPREAD_LANGUAGE_CODES: frozenset[str] = frozenset(
+    code for code, count in _PRIMARY_LANGUAGE_COUNTS.items() if count >= 2
+)
+"""Коди мов, основних для 2+ країн (en, es, de, ar, nl, pt на цьому словнику)."""
+
+
+def is_widespread_language(code: str) -> bool:
+    """Чи мова спільна: основна для двох і більше країн словника."""
+    return code in WIDESPREAD_LANGUAGE_CODES
+
+
 def country_by_code(code: str) -> Country | None:
     """Країна за кодом: "de" → Німеччина."""
     return COUNTRIES.get(code)

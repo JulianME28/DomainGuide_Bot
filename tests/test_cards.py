@@ -81,33 +81,36 @@ class TestПорядокБлоків:
 class TestРозкладСкладових:
     async def test_підсумок_з_розкладом(self, magic):
         card = render_result(run_query(magic, query_for("de")))
-        # Німеччина: 9 (.de 6 | мова 2 | GEO 1)
-        assert "Знайдено донорів:</b> 9 (.de 6 | мова 2 | GEO 1)" in card
+        # Німецька — СПІЛЬНА (de/at/ch), тож мовний крок не в підсумку:
+        # Німеччина: 7 (.de 6 | GEO 1), без складової «мова».
+        assert "Знайдено донорів:</b> 7 (.de 6 | GEO 1)" in card
+        assert "мова" not in card.split("Знайдено донорів")[1].split("\n")[0]
 
     async def test_додаток_окремим_рядком(self, magic):
         card = render_result(run_query(magic, query_for("de")))
         assert "на зонах інших країн — 2" in card
 
     async def test_додаток_не_входить_у_підсумок(self, magic):
-        """Підсумок 9 і додаток 2 не зливаються в 11 ніде в картці."""
+        """Підсумок 7 і додаток 2 не зливаються в 9 у рядку розкладу."""
         card = render_result(run_query(magic, query_for("de")))
-        assert "11" not in card
+        found = next(line for line in card.split("\n") if "Знайдено донорів" in line)
+        assert "9" not in found
 
     async def test_формулювання_каже_на_зонах_інших_країн(self, magic):
         card = render_result(run_query(magic, query_for("de")))
         assert "на зонах інших країн" in card
 
     async def test_морди_з_geo_складовою(self, mordy):
-        """У «Морд» тепер є GEO — розклад показує три складові, як у «Меджику».
-
-        Німеччина: 4 (.de 3 | мова 0 | GEO 1) — m1,m4,m7 у зоні, m2 через GEO(de).
+        """У «Морд» є GEO. Німецька — спільна, тож складової «мова» нема:
+        Німеччина: 4 (.de 3 | GEO 1) — m1,m4,m7 у зоні, m2 через GEO(de).
         """
         card = render_result(
             run_query(mordy, DonorQuery(section_key="mordy", country=country_by_code("de")))
         )
         found = next(line for line in card.split("\n") if "Знайдено донорів" in line)
-        assert "4 (.de 3 | мова 0 | GEO 1)" in found
+        assert "4 (.de 3 | GEO 1)" in found
         assert "GEO" in found
+        assert "мова" not in found
 
     async def test_якщо_додатка_немає_рядка_теж_немає(self, magic):
         card = render_result(run_query(magic, query_for("de", dr_min=100)))
@@ -140,8 +143,8 @@ class TestПопередженняПроПоказники:
 
     async def test_похибка_завжди_згадується(self, magic):
         card = render_result(run_query(magic, query_for("de")))
-        # Німеччина: підсумок 9 → нижня межа 6.
-        assert "орієнтовна кількість з урахуванням похибки 6–9 (допустима похибка 30%)" in card
+        # Німеччина (німецька — спільна): підсумок 7 → нижня межа 5.
+        assert "орієнтовна кількість з урахуванням похибки 5–7 (допустима похибка 30%)" in card
         # Старого окремого рядка «Орієнтовна кількість...» більше немає.
         assert "Орієнтовна кількість з урахуванням похибки:" not in card
 
