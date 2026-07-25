@@ -491,8 +491,9 @@ def render_both_bases(query, blocks: list[str], *, total=None, explicit_both: bo
     один раз у шапці, а не в кожному блоці. Суміжні країни у зведення не йдуть
     (вони у повній картці за кнопкою «Детально»), тож про них — окрема підказка.
 
-    `total` (CrossBaseTotal або None) — підсумок по УНІКАЛЬНИХ доменах разом;
-    показуємо його, коли просили перелік через «+» чи слово «всього».
+    `total` (CrossBaseTotal або None) — підсумок по УНІКАЛЬНИХ доменах разом.
+    Показуємо його ЗАВЖДИ у ШАПЦІ, одразу під рядком про бази: раз обидві бази
+    видно, загальне число доречне завжди. Унизу підсумок не дублюємо.
     `explicit_both` — чи користувач сам назвав обидві бази («(Меджик + Морди)»);
     тоді шапка не пише «базу не вказано», бо це неправда."""
     base_note = (
@@ -504,6 +505,17 @@ def render_both_bases(query, blocks: list[str], *, total=None, explicit_both: bo
         f"🔎 <b>Запит:</b> {escape(query.describe())}",
         base_note,
     ]
+
+    # Підсумок — одразу під рядком про бази (вгорі), а не в кінці повідомлення.
+    if total is not None:
+        breakdown = " + ".join(
+            f"{escape(title)} {number(count)}" for title, count in total.per_base
+        )
+        if total.overlap > 0:
+            breakdown += f", з них {number(total.overlap)} є в обох базах"
+        header.append(f"📦 <b>Загалом: {number(total.unique)} по двох базах</b>")
+        header.append(f"<i>({breakdown})</i>")
+
     if query.request_hint:
         header.append(
             f"ℹ️ <i>Фразу «{escape(query.request_hint)}» я зрозумів як прохання показати "
@@ -511,18 +523,6 @@ def render_both_bases(query, blocks: list[str], *, total=None, explicit_both: bo
         )
 
     body = f"\n\n{'─' * 12}\n\n".join(["\n".join(header), *blocks])
-
-    if total is not None:
-        breakdown = " + ".join(
-            f"{escape(title)} {number(count)}" for title, count in total.per_base
-        )
-        if total.overlap > 0:
-            breakdown += f", з них {number(total.overlap)} є в обох базах"
-        body += (
-            f"\n\n{'═' * 12}\n"
-            f"📦 <b>Разом: {number(total.unique)} унікальних донорів</b>\n"
-            f"<i>({breakdown})</i>"
-        )
 
     if query.request_hint:
         body += (

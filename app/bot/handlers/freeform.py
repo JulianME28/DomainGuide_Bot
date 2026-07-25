@@ -58,8 +58,8 @@ async def handle_free_text(message: Message, services: BotServices, state: FSMCo
 
     # Зведення по обох базах, коли базу не назвали ЯВНО, або коли її назвали
     # переліком («(Меджик + Морди)», «в обох базах»). Список країн має власний
-    # вигляд, тому для нього — окремий шлях. Підсумковий рядок додаємо, якщо
-    # просили «всього» чи перелік через «+».
+    # вигляд, тому для нього — окремий шлях. Підсумок (унікальних донорів разом)
+    # зведення показує завжди, угорі.
     show_both = not parsed.query.is_multi_country and (
         parsed.both_bases or not parsed.section_named
     )
@@ -69,7 +69,6 @@ async def handle_free_text(message: Message, services: BotServices, state: FSMCo
             services,
             parsed.query,
             message.from_user.id,
-            with_total=parsed.want_total,
             explicit_both=parsed.both_bases,
         )
         return

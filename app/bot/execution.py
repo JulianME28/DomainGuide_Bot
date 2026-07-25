@@ -126,7 +126,6 @@ async def show_both_bases(
     query: DonorQuery,
     user_id: int,
     *,
-    with_total: bool = False,
     explicit_both: bool = False,
 ) -> None:
     """Зведений показ по ОБОХ базах — коли базу в запиті не назвали.
@@ -134,9 +133,9 @@ async def show_both_bases(
     Кожна база — окремим компактним блоком (без великих додаткових блоків),
     унизу кнопки «Детально по …» на повну картку відповідної бази.
 
-    Якщо `with_total` — знизу додаємо підсумковий рядок про УНІКАЛЬНИХ донорів
-    разом (перелік через «+» або слово «всього»). Підсумок рахуємо по доменах,
-    а не простою сумою, бо один сайт може бути в обох базах."""
+    Угорі ЗАВЖДИ показуємо підсумок про УНІКАЛЬНИХ донорів разом: раз обидві
+    бази видно, загальне число доречне завжди. Рахуємо по доменах, а не простою
+    сумою, бо один сайт може бути в обох базах."""
     message = target.message if isinstance(target, CallbackQuery) else target
     if message is None:
         raise RuntimeError("Немає повідомлення, у яке можна відповісти")
@@ -156,11 +155,9 @@ async def show_both_bases(
             blocks.append(render_compact_block(result, dropped_alt_base=alt[1] if alt else None))
             total_inputs.append((title, dataset, per_base))
 
-        # Підсумок по унікальних доменах — окремим лінійним проходом (див.
-        # cross_base_total). Домени лишаються в аналітиці, сюди — самі числа.
-        total = None
-        if with_total:
-            total = await asyncio.to_thread(cross_base_total, total_inputs)
+        # Підсумок по унікальних доменах — завжди, окремим лінійним проходом
+        # (див. cross_base_total). Домени лишаються в аналітиці, сюди — числа.
+        total = await asyncio.to_thread(cross_base_total, total_inputs)
     except Exception:
         logger.exception("Не вдалося виконати запит по обох базах")
         await status.edit_text(
