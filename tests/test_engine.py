@@ -4,7 +4,13 @@ from __future__ import annotations
 
 import pytest
 
-from app.analytics.engine import Aggregate, aggregate, run_query, select_core
+from app.analytics.engine import (
+    Aggregate,
+    aggregate,
+    cross_base_total,
+    run_query,
+    select_core,
+)
 from app.analytics.query import DonorQuery, QueryKind
 from app.data.models import Dataset, Donor
 from app.dictionary.countries import country_by_code
@@ -230,6 +236,52 @@ class TestБезпекаДоменНеВитікає:
         donors = select_core(magic, DonorQuery(section_key="magic", country=country_by_code("de")))
         assert len(donors) == 6
         assert all(isinstance(d, Donor) for d in donors)
+
+
+def _dataset(key: str, title: str, donors: tuple[Donor, ...]) -> Dataset:
+    return Dataset(section_key=key, title=title, sheet_name=title, donors=donors, loaded_at=0.0)
+
+
+class TestПідсумокПоБазах:
+    """cross_base_total — унікальні домени по кількох базах, без подвійного рахунку."""
+
+    def test_унікальні_домени_а_не_сума(self):
+        """Спільний домен рахується РАЗ: разом менше, ніж проста сума."""
+        magic = _dataset(
+            "magic",
+            "Меджик",
+            (donor(domain="a.de"), donor(domain="b.de"), donor(domain="shared.de")),
+        )
+        mordy = _dataset("mordy", "Морди", (donor(domain="c.de"), donor(domain="shared.de")))
+        query = DonorQuery(section_key="magic")
+
+        total = cross_base_total([("Меджик", magic, query), ("Морди", mordy, query)])
+
+        assert dict(total.per_base) == {"Меджик": 3, "Морди": 2}
+        assert total.unique == 4, "a, b, c, shared — чотири унікальні, а не 3+2=5"
+        assert total.overlap == 1, "shared.de є в обох базах"
+
+    def test_без_перетину_overlap_нуль(self):
+        """Якщо спільних доменів немає — overlap = 0, разом = проста сума."""
+        magic = _dataset("magic", "Меджик", (donor(domain="a.de"), donor(domain="b.de")))
+        mordy = _dataset("mordy", "Морди", (donor(domain="c.de"),))
+        query = DonorQuery(section_key="magic")
+
+        total = cross_base_total([("Меджик", magic, query), ("Морди", mordy, query)])
+
+        assert total.unique == 3
+        assert total.overlap == 0
+
+    def test_повертає_лише_числа_без_доменів(self):
+        """У структурі підсумку немає жодного домену — самі числа (безпека)."""
+        magic = _dataset("magic", "Меджик", (donor(domain="secret1.de"),))
+        mordy = _dataset("mordy", "Морди", (donor(domain="secret2.de"),))
+        query = DonorQuery(section_key="magic")
+
+        total = cross_base_total([("Меджик", magic, query), ("Морди", mordy, query)])
+
+        assert "secret1.de" not in repr(total)
+        assert "secret2.de" not in repr(total)
 
 
 class TestОписЗапиту:

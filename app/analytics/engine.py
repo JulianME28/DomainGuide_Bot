@@ -461,6 +461,54 @@ def result_count(dataset: Dataset, query: DonorQuery) -> int:
     return sum(1 for donor in dataset.donors if passes_result(donor, query))
 
 
+@dataclass(frozen=True, slots=True)
+class CrossBaseTotal:
+    """Підсумок по КІЛЬКОХ базах разом — самі числа, без жодного домену.
+
+    Рахувати простою сумою `56 + 279` не можна: один і той самий сайт може бути
+    і в «Меджику», і в «Мордах», і тоді його порахували б двічі. Тому підсумок —
+    це кількість УНІКАЛЬНИХ доменів (об'єднання множин), а `overlap` — скільки
+    доменів опинилось одразу в обох базах (перетин).
+
+    БЕЗПЕКА: домени порівнюються всередині шару аналітики й НАЗОВНІ не виходять —
+    структура містить лише числа (див. CLAUDE.md §2.2, §5).
+    """
+
+    per_base: tuple[tuple[str, int], ...]  # (назва бази, скільки в ній)
+    unique: int  # скільки унікальних доменів разом
+
+    @property
+    def overlap(self) -> int:
+        """Скільки донорів «зайві» через дублювання = скільки є в обох базах.
+
+        Для двох баз без внутрішніх дублів це рівно перетин |A ∩ B|:
+        |A| + |B| − |A ∪ B|.
+        """
+        return sum(count for _title, count in self.per_base) - self.unique
+
+
+def cross_base_total(bases: list[tuple[str, Dataset, DonorQuery]]) -> CrossBaseTotal:
+    """Підрахунок по кількох базах разом: скільки в кожній і скільки унікальних.
+
+    Один прохід на базу: додаємо домен кожного відповідного донора в спільну
+    множину `seen`. Множина сама прибирає повтори, тож вкладені цикли й
+    попарні порівняння не потрібні — складність лінійна від кількості рядків.
+
+    Домени живуть лише в цій функції: назовні повертаємо самі числа.
+    """
+    seen: set[str] = set()
+    per_base: list[tuple[str, int]] = []
+    for title, dataset, query in bases:
+        normalized = normalize_query(dataset, query)
+        count = 0
+        for donor in dataset.donors:
+            if passes_result(donor, normalized):
+                count += 1
+                seen.add(donor.domain)
+        per_base.append((title, count))
+    return CrossBaseTotal(per_base=tuple(per_base), unique=len(seen))
+
+
 def _build_offer(country, donors: list[Donor]) -> LanguageAddendum | None:
     """Складає рядок-пропозицію (на зонах інших країн / на нейтральних зонах)."""
     language = country.language if country else None

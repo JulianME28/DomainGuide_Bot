@@ -20,6 +20,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 from app.analytics.engine import (
     MAX_MULTI_COUNTRIES,
     QueryResult,
+    cross_base_total,
     run_multi_country,
     run_query,
 )
@@ -124,11 +125,18 @@ async def show_both_bases(
     services: BotServices,
     query: DonorQuery,
     user_id: int,
+    *,
+    with_total: bool = False,
+    explicit_both: bool = False,
 ) -> None:
     """Зведений показ по ОБОХ базах — коли базу в запиті не назвали.
 
     Кожна база — окремим компактним блоком (без великих додаткових блоків),
-    унизу кнопки «Детально по …» на повну картку відповідної бази."""
+    унизу кнопки «Детально по …» на повну картку відповідної бази.
+
+    Якщо `with_total` — знизу додаємо підсумковий рядок про УНІКАЛЬНИХ донорів
+    разом (перелік через «+» або слово «всього»). Підсумок рахуємо по доменах,
+    а не простою сумою, бо один сайт може бути в обох базах."""
     message = target.message if isinstance(target, CallbackQuery) else target
     if message is None:
         raise RuntimeError("Немає повідомлення, у яке можна відповісти")
@@ -138,13 +146,21 @@ async def show_both_bases(
 
     try:
         blocks: list[str] = []
-        for key, _title in bases:
+        total_inputs: list[tuple[str, object, DonorQuery]] = []
+        for key, title in bases:
             per_base = query.replace(section_key=key)
             dataset = await services.repository.get(key)
             # Без розподілів — компактному блоку вони не потрібні.
             result = await asyncio.to_thread(run_query, dataset, per_base, with_breakdowns=False)
             alt = _alt_base_for(services, result)
             blocks.append(render_compact_block(result, dropped_alt_base=alt[1] if alt else None))
+            total_inputs.append((title, dataset, per_base))
+
+        # Підсумок по унікальних доменах — окремим лінійним проходом (див.
+        # cross_base_total). Домени лишаються в аналітиці, сюди — самі числа.
+        total = None
+        if with_total:
+            total = await asyncio.to_thread(cross_base_total, total_inputs)
     except Exception:
         logger.exception("Не вдалося виконати запит по обох базах")
         await status.edit_text(
@@ -156,7 +172,7 @@ async def show_both_bases(
     # У журнал — лише зведений опис запиту, без доменів.
     services.action_log.add(user_id, f"обидві бази: {query.describe()}")
     await status.edit_text(
-        render_both_bases(query, blocks),
+        render_both_bases(query, blocks, total=total, explicit_both=explicit_both),
         reply_markup=both_bases_menu(bases),
     )
 

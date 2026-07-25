@@ -56,11 +56,22 @@ async def handle_free_text(message: Message, services: BotServices, state: FSMCo
     # рівно те, про що сказали в цьому повідомленні.
     await state.update_data(**query_to_state(parsed.query, parsed.mentioned))
 
-    # Базу не назвали явно — ЗАВЖДИ зведення по обох базах (одне правило).
-    # Маркер-прохання винятку не робить: пояснення про нього й підказку про
-    # суміжні бере на себе саме зведення. Список країн має власний вигляд.
-    if not parsed.section_named and not parsed.query.is_multi_country:
-        await show_both_bases(message, services, parsed.query, message.from_user.id)
+    # Зведення по обох базах, коли базу не назвали ЯВНО, або коли її назвали
+    # переліком («(Меджик + Морди)», «в обох базах»). Список країн має власний
+    # вигляд, тому для нього — окремий шлях. Підсумковий рядок додаємо, якщо
+    # просили «всього» чи перелік через «+».
+    show_both = not parsed.query.is_multi_country and (
+        parsed.both_bases or not parsed.section_named
+    )
+    if show_both:
+        await show_both_bases(
+            message,
+            services,
+            parsed.query,
+            message.from_user.id,
+            with_total=parsed.want_total,
+            explicit_both=parsed.both_bases,
+        )
         return
     await show_result(message, services, parsed.query, message.from_user.id)
 

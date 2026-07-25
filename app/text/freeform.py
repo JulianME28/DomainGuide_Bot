@@ -85,6 +85,26 @@ _GEO_CANCEL = re.compile(
 )
 
 
+# Перелік БАЗ в одному запиті: «(Меджик + Морди)», «Меджик і Морди»,
+# «в обох базах», «по обох базах», «всього по базах». Такий запит просить
+# зведення по двох базах — так само, як коли базу не назвали зовсім.
+_BASE_TOKEN = r"(?:меджик\w*|magic|мэджик|морд\w*|mordy)"
+_PLUS_BASES = re.compile(_BASE_TOKEN + r"\s*\+\s*" + _BASE_TOKEN)
+_BOTH_BASES = re.compile(
+    r"(?:"
+    + _BASE_TOKEN
+    + r"\s*(?:\+|і|та|and)\s*"
+    + _BASE_TOKEN
+    + r"|обох\s+баз\w*"
+    + r"|по\s+базах"
+    + r"|усіма\s+базами|всіма\s+базами)"
+)
+
+# Слова-ПІДСУМОК: просять показати сумарне число по базах.
+# «скільки всього», «всього», «сумарно», «разом», «загалом».
+_SUMMARY = re.compile(r"\b(?:скільки\s+всього|всього|сумарно|разом|загалом)\b")
+
+
 def _mask(text: str, start: int, end: int) -> str:
     return text[:start] + " " * (end - start) + text[end:]
 
@@ -286,6 +306,14 @@ class ParsedQuery:
     """Чи був у тексті маркер-прохання («якщо мало», «альтернативи»…). Тоді
     показуємо повну картку з блоком суміжних країн, а не зведення по обох базах."""
 
+    both_bases: bool = False
+    """Чи попросили ЯВНО обидві бази («(Меджик + Морди)», «в обох базах»). Тоді
+    показуємо зведення навіть якщо назву бази в тексті згадали."""
+
+    want_total: bool = False
+    """Чи просили ПІДСУМОК по базах («скільки всього», перелік через «+»). Тоді
+    у зведенні додаємо рядок про унікальних донорів разом."""
+
     @property
     def needs_clarification(self) -> bool:
         return not self.understood
@@ -309,6 +337,13 @@ def parse_free_text(text: str, *, default_section: str = "magic") -> ParsedQuery
     """
     normalized = normalize_text(text)
     section, section_named = detect_section(text, default_section)
+
+    # Перелік баз і слово-підсумок шукаємо на СВІЖОМУ тексті — до того, як
+    # витягування вимірів затре частину слів. «(Меджик + Морди)» → обидві бази;
+    # «скільки всього» / перелік через «+» → показати сумарне число.
+    both_bases = _BOTH_BASES.search(normalized) is not None
+    plus_bases = _PLUS_BASES.search(normalized) is not None
+    want_total = plus_bases or _SUMMARY.search(normalized) is not None
 
     # Крок 0-: фрази-прохання («якщо мало — англомовні альтернативи»). Прибираємо
     # НАЙПЕРШИМ, щоб слова прохання не стали фільтрами (напр. «англомовні» — мовою).
@@ -402,6 +437,8 @@ def parse_free_text(text: str, *, default_section: str = "magic") -> ParsedQuery
                 mentioned=frozenset(multi_mentioned),
                 cancelled=frozenset(cancelled | ({Dimension.GEO} if geo_cancelled else set())),
                 unrecognized=unrecognized,
+                both_bases=both_bases,
+                want_total=want_total,
             )
 
     query = DonorQuery(
@@ -446,8 +483,9 @@ def parse_free_text(text: str, *, default_section: str = "magic") -> ParsedQuery
         mentioned.add(Dimension.ZONE)
 
     # Скасування — теж зрозумілий намір, а не «нічого не зрозуміло». Прохання
-    # показати альтернативи — теж намір (навіть без інших фільтрів).
-    understood = bool(mentioned or section_named or request_marker)
+    # показати альтернативи, перелік баз чи слово-підсумок — теж намір (навіть
+    # без інших фільтрів).
+    understood = bool(mentioned or section_named or request_marker or both_bases or want_total)
 
     return ParsedQuery(
         query=query,
@@ -456,6 +494,8 @@ def parse_free_text(text: str, *, default_section: str = "magic") -> ParsedQuery
         mentioned=frozenset(mentioned),
         cancelled=frozenset(cancelled),
         request_marker=request_marker,
+        both_bases=both_bases,
+        want_total=want_total,
     )
 
 

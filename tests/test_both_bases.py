@@ -265,3 +265,81 @@ class TestХендлер:
         assert text.count("Знайдено донорів") == 1  # одна база
         assert not any("res:detail" in c for c in _codes(markup))
         assert state._data["dr_min"] == 30  # фільтр збережено
+
+
+class TestПерелікБазІПідсумок:
+    """Перелік баз («(Меджик + Морди)», «в обох базах») і підсумковий рядок."""
+
+    async def test_перелік_через_плюс_дає_зведення_з_підсумком(self, both_services):
+        """«(Меджик + Морди)» → два блоки + рядок про унікальних донорів разом."""
+        from app.bot.handlers.freeform import handle_free_text
+
+        message = FakeMessage(text="Скільки всього донорів (Меджик + Морди)?")
+        await handle_free_text(message, both_services, FakeState({}))
+        text, markup = _shown(message)
+        assert text.count("Знайдено донорів") == 2
+        assert "res:detail:magic" in _codes(markup)
+        assert "унікальних донорів" in text  # підсумковий рядок
+        assert "📦 <b>Разом:" in text
+
+    async def test_в_обох_базах_дає_зведення_без_підсумку(self, both_services):
+        """«в обох базах» без слова-підсумку → зведення, але рядка «Разом» немає."""
+        from app.bot.handlers.freeform import handle_free_text
+
+        message = FakeMessage(text="Німеччина в обох базах")
+        await handle_free_text(message, both_services, FakeState({}))
+        text, _markup = _shown(message)
+        assert text.count("Знайдено донорів") == 2
+        assert "унікальних донорів" not in text  # підсумку не просили
+
+    async def test_скільки_всього_додає_підсумок(self, both_services):
+        """«Скільки всього … по Німеччині» (без бази) → зведення + підсумок."""
+        from app.bot.handlers.freeform import handle_free_text
+
+        message = FakeMessage(text="Скільки всього донорів по Німеччині?")
+        await handle_free_text(message, both_services, FakeState({}))
+        text, _markup = _shown(message)
+        assert text.count("Знайдено донорів") == 2
+        assert "унікальних донорів" in text
+
+    async def test_підсумок_рахує_унікальні_а_не_суму(self, both_services):
+        """Разом ≤ проста сума блоків: спільний домен рахується один раз."""
+        from app.bot.handlers.freeform import handle_free_text
+
+        message = FakeMessage(text="Скільки всього донорів (Меджик + Морди)?")
+        await handle_free_text(message, both_services, FakeState({}))
+        text, _markup = _shown(message)
+        # У фікстурі uk1.co.uk є і в «Меджику», і в «Мордах» — отже перетин є.
+        assert "є в обох базах" in text
+
+    async def test_рядок_перетину_відсутній_коли_перетину_немає(self, empty_mordy_services):
+        """Морди порожні → спільних доменів нема → рядка про перетин немає."""
+        from app.bot.handlers.freeform import handle_free_text
+
+        message = FakeMessage(text="Скільки всього донорів (Меджик + Морди)?")
+        await handle_free_text(message, empty_mordy_services, FakeState({}))
+        text, _markup = _shown(message)
+        assert "унікальних донорів" in text
+        assert "є в обох базах" not in text
+
+    async def test_у_підсумку_немає_доменів(self, both_services, magic):
+        """Навіть із підсумком жоден домен не потрапляє у відповідь."""
+        from app.bot.handlers.freeform import handle_free_text
+
+        message = FakeMessage(text="Скільки всього донорів (Меджик + Морди)?")
+        await handle_free_text(message, both_services, FakeState({}))
+        text, _markup = _shown(message)
+        for donor in magic.donors:
+            if donor.domain:
+                assert donor.domain not in text
+
+    async def test_явна_одна_база_без_підсумку(self, both_services):
+        """«Морди Німеччина» — одна картка, підсумку по базах немає."""
+        from app.bot.handlers.freeform import handle_free_text
+
+        message = FakeMessage(text="Морди Німеччина")
+        await handle_free_text(message, both_services, FakeState({}))
+        text, markup = _shown(message)
+        assert text.count("Знайдено донорів") == 1
+        assert "res:filter" in _codes(markup)
+        assert "унікальних донорів" not in text

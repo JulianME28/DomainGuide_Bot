@@ -484,15 +484,25 @@ def render_compact_block(result: QueryResult, *, dropped_alt_base: str | None = 
     return "\n".join(lines)
 
 
-def render_both_bases(query, blocks: list[str]) -> str:
+def render_both_bases(query, blocks: list[str], *, total=None, explicit_both: bool = False) -> str:
     """Зведене повідомлення по обох базах: спільний рядок запиту + блоки баз.
 
     Фраза-прохання стосується РОЗБОРУ запиту, а не бази, тож пояснення про неї —
     один раз у шапці, а не в кожному блоці. Суміжні країни у зведення не йдуть
-    (вони у повній картці за кнопкою «Детально»), тож про них — окрема підказка."""
+    (вони у повній картці за кнопкою «Детально»), тож про них — окрема підказка.
+
+    `total` (CrossBaseTotal або None) — підсумок по УНІКАЛЬНИХ доменах разом;
+    показуємо його, коли просили перелік через «+» чи слово «всього».
+    `explicit_both` — чи користувач сам назвав обидві бази («(Меджик + Морди)»);
+    тоді шапка не пише «базу не вказано», бо це неправда."""
+    base_note = (
+        "<i>Показую обидві бази разом.</i>"
+        if explicit_both
+        else "<i>Базу не вказано — перевіряю обидві.</i>"
+    )
     header = [
         f"🔎 <b>Запит:</b> {escape(query.describe())}",
-        "<i>Базу не вказано — перевіряю обидві.</i>",
+        base_note,
     ]
     if query.request_hint:
         header.append(
@@ -501,6 +511,19 @@ def render_both_bases(query, blocks: list[str]) -> str:
         )
 
     body = f"\n\n{'─' * 12}\n\n".join(["\n".join(header), *blocks])
+
+    if total is not None:
+        breakdown = " + ".join(
+            f"{escape(title)} {number(count)}" for title, count in total.per_base
+        )
+        if total.overlap > 0:
+            breakdown += f", з них {number(total.overlap)} є в обох базах"
+        body += (
+            f"\n\n{'═' * 12}\n"
+            f"📦 <b>Разом: {number(total.unique)} унікальних донорів</b>\n"
+            f"<i>({breakdown})</i>"
+        )
+
     if query.request_hint:
         body += (
             "\n\n💡 <i>Суміжні країни-варіанти — у детальній картці "

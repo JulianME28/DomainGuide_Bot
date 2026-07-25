@@ -212,3 +212,59 @@ class TestФразиПрохання:
         """Навіть якщо крім прохання нічого не назвали — це не «не зрозумів»."""
         parsed = parse_free_text("Франція; підбери схожі")
         assert not parsed.needs_clarification
+
+
+class TestПерелікБазІПідсумок:
+    """Розпізнавання переліку баз і слова-підсумку."""
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "(Меджик + Морди) по Німеччині",
+            "Меджик + Морди",
+            "Меджик і Морди",
+            "донори в обох базах",
+            "по обох базах",
+            "всього по базах",
+        ],
+    )
+    def test_перелік_баз_дає_both_bases(self, text):
+        parsed = parse_free_text(text)
+        assert parsed.both_bases is True
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "скільки всього донорів по Німеччині",
+            "всього по Франції",
+            "донори сумарно",
+            "разом по Британії",
+            "загалом донорів",
+            "(Меджик + Морди) по Німеччині",  # перелік через «+» теж просить підсумок
+        ],
+    )
+    def test_слово_підсумок_дає_want_total(self, text):
+        parsed = parse_free_text(text)
+        assert parsed.want_total is True
+
+    def test_плюс_між_базами_це_підсумок(self):
+        """Перелік через «+» просить підсумок навіть без слова «всього»."""
+        parsed = parse_free_text("(Меджик + Морди) по Німеччині")
+        assert parsed.both_bases is True
+        assert parsed.want_total is True
+
+    def test_в_обох_базах_без_підсумку(self):
+        """«в обох базах» — обидві бази, але підсумок не просили."""
+        parsed = parse_free_text("Німеччина в обох базах")
+        assert parsed.both_bases is True
+        assert parsed.want_total is False
+
+    def test_звичайний_запит_не_both_bases(self):
+        parsed = parse_free_text("Меджик, Британія")
+        assert parsed.both_bases is False
+        assert parsed.want_total is False
+
+    def test_перелік_баз_зрозумілий_запит(self):
+        """Навіть сам перелік баз — це намір, а не «не зрозумів»."""
+        parsed = parse_free_text("в обох базах")
+        assert not parsed.needs_clarification
