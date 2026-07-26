@@ -197,6 +197,46 @@ class TestДвіМетрикиПоспіль:
         assert (parsed.query.dr_min, parsed.query.dr_max) == (20, 40)
 
 
+class TestНапрямПорогу:
+    """«від» = мінімум ЗАВЖДИ; заперечення не інвертує напрям мовчки."""
+
+    def test_від_це_мінімум(self):
+        parsed = parse("DR від 50")
+        assert parsed.query.dr_min == 50
+        assert parsed.query.dr_max is None
+
+    def test_два_від_обидва_мінімуми(self):
+        """Ключове: два пороги «від» в одному запиті — обидва мінімуми."""
+        parsed = parse("DR від 50 і трафік від 50")
+        assert (parsed.query.dr_min, parsed.query.dr_max) == (50, None)
+        assert (parsed.query.traffic_min, parsed.query.traffic_max) == (50, None)
+
+    def test_до_це_максимум(self):
+        parsed = parse("трафік до 100")
+        assert (parsed.query.traffic_min, parsed.query.traffic_max) == (None, 100)
+
+    def test_не_менше_це_мінімум(self):
+        """«не менше 50» = щонайменше 50, а не «до 50» (була інверсія)."""
+        parsed = parse("DR не менше 50")
+        assert parsed.query.dr_min == 50
+        assert parsed.query.dr_max is None
+
+    def test_не_більше_це_максимум(self):
+        """«не більше 50» = максимум 50 (раніше давало і min, і max)."""
+        parsed = parse("DR не більше 50")
+        assert parsed.query.dr_max == 50
+        assert parsed.query.dr_min is None
+
+    @pytest.mark.parametrize(
+        ("text", "expected_min"),
+        [("DR від 50", 50), ("DR понад 50", 50), ("DR більше 50", 50), ("DR не менше 50", 50)],
+    )
+    def test_синоніми_мінімуму(self, text, expected_min):
+        parsed = parse(text)
+        assert parsed.query.dr_min == expected_min
+        assert parsed.query.dr_max is None
+
+
 class TestВимірЧитаєЛишеСвійШматок:
     """Число з чужого шматка не має перетікати до сусіда.
 

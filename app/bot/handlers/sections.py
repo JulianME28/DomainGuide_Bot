@@ -306,6 +306,13 @@ async def receive_free_text(message: Message, services: BotServices, state: FSMC
     await state.set_state(None)
     await state.update_data(**query_to_state(parsed.query, parsed.mentioned))
 
+    # Порожній запит без бази — не вивалюємо всю базу, а підказуємо, що вказати.
+    if not parsed.section_named and not parsed.query.is_multi_country and parsed.query.is_empty:
+        from app.text.freeform import EMPTY_QUERY_HINT
+
+        await message.answer(EMPTY_QUERY_HINT, reply_markup=cancel_only())
+        return
+
     # Зведено по обох базах, коли базу не назвали явно АБО назвали переліком
     # («(Меджик + Морди)», «в обох базах»). Список країн має власний вигляд.
     # Підсумок (унікальних донорів разом) зведення показує завжди, угорі.

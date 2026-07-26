@@ -95,7 +95,8 @@ _BOTH_BASES = re.compile(
     + _BASE_TOKEN
     + r"\s*(?:\+|і|та|and)\s*"
     + _BASE_TOKEN
-    + r"|обох\s+баз\w*"
+    + r"|обо?х\s+баз\w*"
+    + r"|обидв\w*\s+баз\w*"
     + r"|по\s+базах"
     + r"|усіма\s+базами|всіма\s+базами)"
 )
@@ -239,12 +240,18 @@ def _extract_zone(text: str) -> tuple[tuple[str, ...], str]:
     offset = modifier.end() + (len(raw_tail) - len(stripped))
     head = stripped.split(",", 1)[0]
 
-    # 1) Явна зона: «у зоні .co.uk». find_zone_mentions не нормалізує текст,
-    # тому позиції збігаються з head.
+    # 1) Явні зони: «у зоні .co.uk», «зони .com/.org». Беремо ВСІ згадки після
+    # модифікатора (не лише першу) — інакше «.com/.org» втратив би «.org».
+    # find_zone_mentions не нормалізує текст, тому позиції збігаються з head.
     mentions = find_zone_mentions(head)
     if mentions:
-        zone, _start, end = mentions[0]
-        return _zones_of(zone), _mask(text, modifier.start(), offset + end)
+        zones: list[str] = []
+        for zone, _start, _end in mentions:
+            for resolved in _zones_of(zone):
+                if resolved not in zones:
+                    zones.append(resolved)
+        last_end = mentions[-1][2]
+        return tuple(zones), _mask(text, modifier.start(), offset + last_end)
 
     # 2) Назва країни: «зона Британія» → усі її ccTLD.
     found = find_country_match(head, allow_short=False)
@@ -275,6 +282,8 @@ _STRUCTURAL_STOPWORDS = frozenset(
         # всього» окремо лишаються тригером підсумкового рядка (_SUMMARY), але в
         # список країн і в «не впізнав» потрапляти не мають.
         "разом", "сумарно", "загалом", "всього",
+        # «(обидві бази)» — вказівка на бази, не країна.
+        "обидві", "обидва", "обидвох", "обох", "обома", "обидвома", "базах", "базами",
     }
 )  # fmt: skip
 _ALL_SECTION_WORDS = frozenset(word for words in _SECTION_WORDS.values() for word in words)
@@ -535,4 +544,14 @@ CLARIFICATION_TEXT = (
     "• <code>всі мови</code> · <code>будь-яка країна</code> · <code>DR не важливий</code>\n\n"
     "⚠️ Попередній запит поки лишається активним — подивитися його можна "
     "командою /filters, скинути повністю — /reset."
+)
+
+
+EMPTY_QUERY_HINT = (
+    "📝 Запит порожній — уточніть, що показати: базу, країну, мову, зону або "
+    "метрику. Наприклад:\n"
+    "• <code>Меджик, Британія, трафік від 1</code>\n"
+    "• <code>Морди, .de, DR від 20</code>\n\n"
+    "Можна й через меню — /start, або майстром — /query.\n\n"
+    "<i>Усю базу цілком бот не віддає — лише агреговані показники за фільтром.</i>"
 )

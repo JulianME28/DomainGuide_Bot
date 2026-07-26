@@ -70,6 +70,30 @@ _FILLER = r"(?:по|на|щодо|у|в|до|з)\s+"
 # Число: підтримує «1 200», «1,200», «1.5k».
 _NUMBER = r"(\d[\d\s.,]*\s*[kкmм]?)"
 
+# Оператори порогів. Напрям («від» = мінімум, «до» = максимум) визначається
+# СЛОВОМ, а не позицією, тому «DR від 50 і трафік від 50» дає два мінімуми, а не
+# інвертує один із них.
+_MIN_OP = r"від|понад|мінімум|більш\w*|более|more\s+than|from|>=?"
+_MAX_OP = r"до|максимум|менш\w*|<=?"
+
+# Один поріг: необов'язкове заперечення «не» + оператор + число. Заперечення
+# ІНВЕРТУЄ напрям: «не менше 50» = мінімум 50, «не більше 50» = максимум 50.
+# «не» разом з оператором з'їдаються одним збігом, тож голе «менше» всередині
+# «не менше» окремо вже не матчиться (раніше саме через це виходила інверсія).
+_THRESHOLD = re.compile(
+    rf"(?P<neg>\bне\s+)?(?P<op>{_MIN_OP}|{_MAX_OP})\s*(?P<num>\d[\d\s.,]*\s*[kкmм]?)"
+)
+
+# За якими словами оператор означає МІНІМУM (решта — максимум).
+_MIN_STARTS = ("від", "понад", "мінім", "більш", "более", "more", "from", ">")
+
+
+def _is_minimum(op: str, negated: bool) -> bool:
+    """Чи це поріг-мінімум. Заперечення «не» перевертає напрям оператора."""
+    op = op.strip().lower()
+    minimum = any(op.startswith(word) for word in _MIN_STARTS)
+    return (not minimum) if negated else minimum
+
 
 @dataclass(frozen=True, slots=True)
 class DimensionSpec:
@@ -217,16 +241,27 @@ def _window(text: str, start: int, keyword_end: int) -> tuple[int, int]:
 
 
 def _read_numbers(window: str) -> tuple[float | None, float | None] | None:
-    """Читає «від N до M», «від N», «до M» або просто число після назви."""
+    """Читає «від N до M», «від N», «до M» або просто число після назви.
+
+    Кожен поріг класифікується за СВОЇМ словом-оператором (з урахуванням
+    заперечення «не»), тому «від» завжди мінімум, «до» завжди максимум, а два
+    «від» в одному запиті дають два мінімуми — інверсії бути не може.
+    """
     both = re.search(rf"від\s*{_NUMBER}\s*до\s*{_NUMBER}", window)
     if both:
         return _to_number(both.group(1)), _to_number(both.group(2))
 
-    only_min = re.search(rf"(?:від|більше|более|more than|from|>=?)\s*{_NUMBER}", window)
-    only_max = re.search(rf"(?:до|максимум|не більше|менше|<=?)\s*{_NUMBER}", window)
-
-    minimum = _to_number(only_min.group(1)) if only_min else None
-    maximum = _to_number(only_max.group(1)) if only_max else None
+    minimum: float | None = None
+    maximum: float | None = None
+    for match in _THRESHOLD.finditer(window):
+        value = _to_number(match.group("num"))
+        if value is None:
+            continue
+        if _is_minimum(match.group("op"), match.group("neg") is not None):
+            if minimum is None:
+                minimum = value
+        elif maximum is None:
+            maximum = value
     if minimum is not None or maximum is not None:
         return minimum, maximum
 

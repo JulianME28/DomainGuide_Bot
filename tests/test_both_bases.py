@@ -269,6 +269,39 @@ class TestХендлер:
         assert state._data["dr_min"] == 30  # фільтр збережено
 
 
+class TestПорожнійЗапит:
+    """Порожній запит без бази не вивалює базу, а підказує, що вказати."""
+
+    async def _run(self, services, text):
+        from app.bot.handlers.freeform import handle_free_text
+
+        message = FakeMessage(text=text)
+        await handle_free_text(message, services, FakeState({}))
+        return message
+
+    @pytest.mark.parametrize("text", ["разом", "всього", "по обох базах", "обидві бази"])
+    async def test_порожній_дає_підказку_а_не_базу(self, both_services, text):
+        from app.text.freeform import EMPTY_QUERY_HINT
+
+        message = await self._run(both_services, text)
+        # Показано підказку і НЕ пораховано жодної картки: картка з'являється
+        # через status.edit_text, тож у жодного «надісланого» немає edits.
+        assert any(a[0] == EMPTY_QUERY_HINT for a in message.answers)
+        assert all(sent.edits == [] for sent in message.sents)
+
+    async def test_донори_теж_не_вивалює(self, both_services):
+        """«донори» без параметрів → підказка (через уточнення), не вся база."""
+        message = await self._run(both_services, "донори")
+        assert message.answers
+        assert all(sent.edits == [] for sent in message.sents)  # картки немає
+
+    async def test_з_фільтром_виконується(self, both_services):
+        """Щойно є хоч один фільтр — виконуємо як звичайно (зведення по базах)."""
+        message = await self._run(both_services, "трафік від 1")
+        text, _markup = _shown(message)
+        assert text.count("Знайдено донорів") == 2  # база показана
+
+
 class TestПерелікБазІПідсумок:
     """Перелік баз («(Меджик + Морди)», «в обох базах») і підсумок угорі."""
 

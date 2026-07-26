@@ -268,3 +268,38 @@ class TestПерелікБазІПідсумок:
         """Навіть сам перелік баз — це намір, а не «не зрозумів»."""
         parsed = parse_free_text("в обох базах")
         assert not parsed.needs_clarification
+
+
+class TestЯвнаЗона:
+    """Фільтр по зоні, зокрема глобальній, коли її вказано ЯВНО."""
+
+    def test_зона_com_фільтрує(self):
+        assert parse_free_text("зона .com").query.zones == (".com",)
+
+    def test_кілька_зон_після_ключа(self):
+        """«зона .com/.org» бере ОБИДВІ зони, а не лише першу."""
+        assert parse_free_text("зона .com/.org").query.zones == (".com", ".org")
+        assert parse_free_text("зони .com/.org").query.zones == (".com", ".org")
+
+    def test_глобальна_зона_нічия_в_країновій_логіці(self):
+        """Явний фільтр працює, але в країновій логіці .com не належить нікому."""
+        from app.dictionary.countries import country_by_zone
+
+        assert parse_free_text("зона .com").query.zones == (".com",)
+        assert country_by_zone(".com") is None
+
+
+class TestСлужбовіСловаНеКраїна:
+    """«разом/та/і/обидві…» ніде не країна й не «не впізнав»; «разом» — підсумок."""
+
+    def test_разом_і_обидві_не_в_нерозпізнаних(self):
+        parsed = parse_free_text("Донори по Франції, Бельгії та Нідерландах разом (обидві бази)")
+        assert {c.code for c in parsed.query.countries} == {"fr", "be", "nl"}
+        assert parsed.unrecognized == ()
+        assert parsed.want_total is True  # «разом» далі тригерить підсумок
+
+    @pytest.mark.parametrize("glue", ["разом", "сумарно", "загалом", "та", "і", "й", "обидві"])
+    def test_склеювачі_не_нерозпізнані(self, glue):
+        parsed = parse_free_text(f"Німеччина {glue} Франція")
+        assert parsed.query.is_multi_country
+        assert glue not in parsed.unrecognized
