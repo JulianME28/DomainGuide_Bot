@@ -104,6 +104,23 @@ _BOTH_BASES = re.compile(
 # «скільки всього», «всього», «сумарно», «разом», «загалом».
 _SUMMARY = re.compile(r"\b(?:скільки\s+всього|всього|сумарно|разом|загалом)\b")
 
+# Опис списку країн через МОВНУ ознаку: «англомовні країни», «всі іспаномовні».
+# Це лише опис для рядка «Запит:», НЕ фільтр — самі країни задані переліком.
+_LANG_COUNTRY_DESC = re.compile(r"([а-яіїєґ]+мов)н\w*\s+країн|вс[іео]\w*\s+([а-яіїєґ]+мов)н")
+
+
+def _language_country_label(text: str) -> str:
+    """«англомовні країни» / «всі англомовні» → «англомовних» (для опису списку).
+
+    Повертає прикметник у родовому множини («англомовних»), щоб рядок «Запит:»
+    читався як «5 англомовних країн». Якщо мовної ознаки немає — порожній рядок.
+    """
+    match = _LANG_COUNTRY_DESC.search(text)
+    if match is None:
+        return ""
+    stem = match.group(1) or match.group(2)
+    return f"{stem}них"
+
 
 def _mask(text: str, start: int, end: int) -> str:
     return text[:start] + " " * (end - start) + text[end:]
@@ -249,11 +266,15 @@ _SECTION_WORDS: dict[str, tuple[str, ...]] = {
 # на назву, вважаємо нерозпізнаною країною.
 _STRUCTURAL_STOPWORDS = frozenset(
     {
-        "по", "на", "для", "про", "и", "і", "та", "або", "or", "and", "the", "of",
-        "for", "list", "донори", "донор", "донора", "донорів", "донорам", "донорами",
-        "покажи", "показати", "скільки", "дай", "знайди", "знайти", "хочу", "треба",
-        "потрібно", "база", "базі", "бази", "усі", "усіх", "все", "всі", "всіх",
-        "гео", "geo",  # лишок модифікатора GEO, якщо країну після нього не впізнали
+        "по", "на", "для", "про", "и", "і", "й", "та", "також", "або", "or", "and",
+        "the", "of", "for", "list", "в", "у", "донори", "донор", "донора", "донорів",
+        "донорам", "донорами", "покажи", "показати", "скільки", "дай", "знайди",
+        "знайти", "хочу", "треба", "потрібно", "база", "базі", "бази", "усі", "усіх",
+        "все", "всі", "всіх", "гео", "geo",
+        # Слова-склеювачі й слова-підсумок: це НЕ країни. «разом/сумарно/загалом/
+        # всього» окремо лишаються тригером підсумкового рядка (_SUMMARY), але в
+        # список країн і в «не впізнав» потрапляти не мають.
+        "разом", "сумарно", "загалом", "всього",
     }
 )  # fmt: skip
 _ALL_SECTION_WORDS = frozenset(word for words in _SECTION_WORDS.values() for word in words)
@@ -345,6 +366,9 @@ def parse_free_text(text: str, *, default_section: str = "magic") -> ParsedQuery
     both_bases = _BOTH_BASES.search(normalized) is not None
     plus_bases = _PLUS_BASES.search(normalized) is not None
     want_total = plus_bases or _SUMMARY.search(normalized) is not None
+    # Опис списку через мовну ознаку («англомовні країни») — на свіжому тексті,
+    # доки слово-ознаку не затерли пізніші кроки розбору.
+    countries_note = _language_country_label(normalized)
 
     # Крок 0-: фрази-прохання («якщо мало — англомовні альтернативи»). Прибираємо
     # НАЙПЕРШИМ, щоб слова прохання не стали фільтрами (напр. «англомовні» — мовою).
@@ -419,6 +443,7 @@ def parse_free_text(text: str, *, default_section: str = "magic") -> ParsedQuery
                 countries=tuple(countries_all),
                 geo=geo,
                 unrecognized=unrecognized,
+                countries_note=countries_note,
                 dr_min=dr_min,
                 dr_max=dr_max,
                 traffic_min=traffic_min,

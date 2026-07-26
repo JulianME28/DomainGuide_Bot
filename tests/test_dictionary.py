@@ -26,6 +26,7 @@ from app.dictionary.languages import (
     language_by_data_value,
 )
 from app.dictionary.resolver import (
+    find_all_countries,
     hint_for_country_mode,
     hint_for_language_mode,
     resolve_country,
@@ -207,6 +208,38 @@ class TestРозпізнаванняКраїни:
         """«дані» — звичайне слово. Воно не має ставати Данією."""
         assert resolve_country("покажи дані по донорах") is None
         assert resolve_country("скільки даних") is None
+
+
+class TestКороткіКодиУСписку:
+    """UK/US та інші короткі скорочення — безпечно, лише в контексті переліку."""
+
+    def _codes(self, text: str) -> set[str]:
+        return {c.code for c in find_all_countries(text)[0]}
+
+    def test_список_з_uk_us_розпізнається_повністю(self):
+        """6 із 6: раніше «us» губився (голий двобуквений код був вимкнений)."""
+        codes = self._codes("uk, us, канада, австралія, ірландія, нова зеландія")
+        assert codes == {"gb", "us", "ca", "au", "ie", "nz"}
+
+    def test_us_у_переліку_через_кому(self):
+        assert self._codes("us, франція") == {"us", "fr"}
+
+    def test_uae_і_usa_теж_працюють(self):
+        assert self._codes("франція, uae, usa") == {"fr", "ae", "us"}
+
+    def test_us_у_суцільній_прозі_не_ловиться(self):
+        """Без ознак переліку (кома/«та»/«країн»/сусідні країни) — «us» мовчить."""
+        assert self._codes("we can trust us here today") == set()
+
+    def test_правило_проти_in_is_ціле(self):
+        """«in», «is» — звичайні слова, країнами не стають ні за яких умов."""
+        assert self._codes("this is a report in progress") == set()
+        # Навіть у контексті переліку «in/is» не є безпечними кодами.
+        assert "in" not in [c.code for c in find_all_countries("франція, in, is")[0]]
+
+    def test_scan_entities_не_ловить_us(self):
+        """Одиночний скан прози короткі коди не вмикає взагалі."""
+        assert scan_entities("trust us").country is None
 
 
 class TestРозпізнаванняМови:

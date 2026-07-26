@@ -55,6 +55,44 @@ class TestПарсингСписку:
         assert "атлантида" in parsed.unrecognized
         assert "мордор" in parsed.unrecognized
 
+    def test_список_з_uk_us_повний(self):
+        """Реальний запит: 6 країн, і жодна (зокрема US) не губиться мовчки."""
+        parsed = parse_free_text("UK, US, Канада, Австралія, Ірландія, Нова Зеландія")
+        assert parsed.query.is_multi_country
+        assert {c.code for c in parsed.query.countries} == {"gb", "us", "ca", "au", "ie", "nz"}
+        assert parsed.unrecognized == ()  # нічого не втрачено й не зайве
+
+    def test_названа_країна_не_зникає_або_в_не_впізнав(self):
+        """Якщо назву не впізнали — вона в «не впізнав», а не зникає тихо."""
+        parsed = parse_free_text("США, Канада, Ельдорадо")
+        assert parsed.query.is_multi_country
+        assert "ельдорадо" in parsed.unrecognized
+
+    def test_разом_не_потрапляє_в_нерозпізнані(self):
+        """«разом» — склеювач-підсумок, а не країна."""
+        parsed = parse_free_text("Морди по США, Канаді та Австралії разом")
+        assert {c.code for c in parsed.query.countries} == {"us", "ca", "au"}
+        assert "разом" not in parsed.unrecognized
+        assert parsed.unrecognized == ()
+
+    def test_разом_далі_тригерить_підсумок(self):
+        """При цьому «разом» лишається тригером підсумкового прапорця."""
+        parsed = parse_free_text("Морди по США, Канаді та Австралії разом")
+        assert parsed.want_total is True
+
+    @pytest.mark.parametrize("glue", ["та", "і", "й", "по", "всього", "сумарно", "загалом"])
+    def test_службові_слова_не_нерозпізнані(self, glue):
+        parsed = parse_free_text(f"Німеччина {glue} Франція")
+        assert parsed.query.is_multi_country
+        assert glue not in parsed.unrecognized
+
+    def test_опис_мовною_ознакою_у_рядку_запиту(self):
+        """«англомовні країни» позначає ПРИНЦИП добору, не стає фільтром."""
+        parsed = parse_free_text("всі англомовні країни: UK, US, Канада, Австралія, Ірландія")
+        assert parsed.query.is_multi_country
+        assert parsed.query.language is None  # не мовний фільтр
+        assert "англомовних країн" in parsed.query.describe()
+
     def test_метричні_фільтри_на_весь_список(self):
         parsed = parse_free_text("Німеччина Франція трафік від 100")
         assert parsed.query.is_multi_country

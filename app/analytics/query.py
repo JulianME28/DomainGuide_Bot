@@ -98,6 +98,11 @@ class DonorQuery:
     """Назви зі списку країн, які не впізнано (лише для запиту-списку). Несе
     їх до картки, щоб показати окремим рядком. На підрахунки не впливає."""
 
+    countries_note: str = ""
+    """Опис принципу добору списку країн для рядка «Запит:» — коли їх названо
+    через мовну ознаку («англомовні країни» → «англомовних»). Це лише ОПИС,
+    а не фільтр: країни задані окремо, на підрахунки не впливає."""
+
     request_hint: str = ""
     """Фраза-прохання («англомовні альтернативи»), яку бот НЕ зробив фільтром,
     а зрозумів як прохання показати схожі варіанти. Несе її до картки для
@@ -255,7 +260,11 @@ class DonorQuery:
         parts: list[str] = []
 
         if self.is_multi_country:
-            parts.append(f"{len(self.countries)} країн")
+            # «5 країн» або, коли список описано мовною ознакою, «5 англомовних країн».
+            if self.countries_note:
+                parts.append(f"{len(self.countries)} {self.countries_note} країн")
+            else:
+                parts.append(f"{len(self.countries)} країн")
         elif self.country:
             parts.append(f"{self.country.name_uk} ({self.country.zones_label})")
         if self.language:

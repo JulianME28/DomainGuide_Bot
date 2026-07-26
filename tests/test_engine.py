@@ -301,6 +301,21 @@ class TestОписЗапиту:
         query = DonorQuery(section_key="magic")
         assert "без обмеження" in query.describe()
 
+    def test_опис_списку_країн(self):
+        query = DonorQuery(
+            section_key="magic",
+            countries=(country_by_code("de"), country_by_code("fr")),
+        )
+        assert query.describe().startswith("2 країн")
+
+    def test_опис_списку_з_мовною_ознакою(self):
+        query = DonorQuery(
+            section_key="magic",
+            countries=(country_by_code("gb"), country_by_code("us")),
+            countries_note="англомовних",
+        )
+        assert query.describe().startswith("2 англомовних країн")
+
     def test_replace_робить_копію(self):
         original = DonorQuery(section_key="magic", dr_min=40)
         changed = original.replace(dr_min=30)

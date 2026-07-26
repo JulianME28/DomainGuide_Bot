@@ -32,8 +32,10 @@ from dataclasses import dataclass
 
 from app.dictionary.countries import (
     COUNTRIES,
+    SAFE_SHORT_COUNTRY_CODES,
     Country,
     countries_with_language,
+    country_by_code,
     country_by_zone,
 )
 from app.dictionary.languages import LANGUAGES, Language
@@ -215,6 +217,24 @@ def resolve_country(text: str, *, allow_short: bool = False) -> Country | None:
     return found[0] if found else None
 
 
+# Ознака, що текст — САМЕ перелік країн, а не суцільна проза: кома/плюс,
+# сполучники-склеювачі списку, або слово «країн». Лише за такої ознаки (чи коли
+# поруч уже є впізнані країни) вмикаємо короткі коди «uk»/«us» — інакше вони
+# мовчать, щоб не ловити «in/is» у звичайному реченні.
+_COUNTRY_LIST_SIGNAL = re.compile(r"[,+]|\bта\b|\bі\b|\bй\b|\bи\b|\bтакож\b|країн")
+
+
+def _find_safe_short_country(text: str) -> tuple[Country, Match] | None:
+    """Перший токен, що є безпечним коротким кодом країни («uk», «us», «uae»)."""
+    for token, start, end in _tokens_with_spans(text):
+        code = SAFE_SHORT_COUNTRY_CODES.get(token)
+        if code is not None:
+            country = country_by_code(code)
+            if country is not None:
+                return country, Match(start, end)
+    return None
+
+
 def find_all_countries(text: str, *, allow_short: bool = False) -> tuple[list[Country], str]:
     """Знаходить УСІ згадані країни — для списку в одному запиті.
 
@@ -228,8 +248,13 @@ def find_all_countries(text: str, *, allow_short: bool = False) -> tuple[list[Co
     затерли його — шукаємо далі, поки збіги є. Спершу затираємо мови, щоб
     «англійською» не перетворилося на країну Англія (та сама хитрість, що в
     scan_entities, лише багаторазова).
+
+    Наприкінці — окремий прохід по коротких кодах («uk», «us»), але ЛИШЕ коли
+    контекст країновий (є ознака переліку або вже впізнані країни). Так «US» у
+    списку не губиться, а «in/is» у прозі й далі не ловляться.
     """
-    masked = normalize_text(text)
+    original = normalize_text(text)
+    masked = original
     if not masked:
         return [], ""
 
@@ -262,6 +287,20 @@ def find_all_countries(text: str, *, allow_short: bool = False) -> tuple[list[Co
             seen.add(country.code)
             countries.append(country)
         masked = blank(masked, match.start, match.end)
+
+    # 3) Короткі коди («uk», «us», «uae») — лише в країновому контексті: коли вже
+    # є впізнані країни або текст явно виглядає як перелік. Поза цим — мовчать.
+    context_ok = allow_short or bool(countries) or _COUNTRY_LIST_SIGNAL.search(original) is not None
+    if context_ok:
+        for _ in range(64):
+            found = _find_safe_short_country(masked)
+            if found is None:
+                break
+            country, match = found
+            if country.code not in seen:
+                seen.add(country.code)
+                countries.append(country)
+            masked = blank(masked, match.start, match.end)
 
     return countries, masked
 
