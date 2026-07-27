@@ -302,11 +302,11 @@ class TestПорожнійЗапит:
         assert text.count("Знайдено донорів") == 2  # база показана
 
 
-class TestПерелікБазІПідсумок:
-    """Перелік баз («(Меджик + Морди)», «в обох базах») і підсумок угорі."""
+class TestПерелікБаз:
+    """Перелік баз («(Меджик + Морди)», «в обох базах») → зведення БЕЗ «Загалом»."""
 
-    async def test_перелік_через_плюс_дає_зведення_з_підсумком(self, both_services):
-        """«(Меджик + Морди)» → два блоки + підсумок «Загалом … по двох базах»."""
+    async def test_перелік_через_плюс_дає_два_блоки(self, both_services):
+        """«(Меджик + Морди)» → два блоки й кнопки «Детально», без рядка «Загалом»."""
         from app.bot.handlers.freeform import handle_free_text
 
         message = FakeMessage(text="Скільки всього донорів (Меджик + Морди)?")
@@ -314,62 +314,23 @@ class TestПерелікБазІПідсумок:
         text, markup = _shown(message)
         assert text.count("Знайдено донорів") == 2
         assert "res:detail:magic" in _codes(markup)
-        assert "📦 <b>Загалом:" in text
-        assert "по двох базах" in text
+        assert "Загалом" not in text
+        assert "по двох базах" not in text
 
-    async def test_підсумок_стоїть_вгорі_а_не_внизу(self, both_services):
-        """Підсумок — у шапці (перед блоками баз) і НЕ дублюється внизу."""
+    async def test_рядок_загалом_прибрано(self, both_services):
+        """Питання унікальні-vs-сума відкрите → рядка «Загалом» немає взагалі."""
         from app.bot.handlers.freeform import handle_free_text
 
-        message = FakeMessage(text="Скільки всього донорів (Меджик + Морди)?")
-        await handle_free_text(message, both_services, FakeState({}))
-        text, _markup = _shown(message)
-        assert text.count("Загалом:") == 1  # рівно один раз
-        # Підсумок — раніше за перший блок бази.
-        assert text.index("Загалом:") < text.index("Знайдено донорів")
+        for query in ("Німеччина в обох базах", "Нова Зеландія"):
+            message = FakeMessage(text=query)
+            await handle_free_text(message, both_services, FakeState({}))
+            text, _markup = _shown(message)
+            assert text.count("Знайдено донорів") == 2  # блоки на місці
+            assert "Загалом" not in text
+            assert "є в обох базах" not in text
 
-    async def test_підсумок_є_в_будь_якому_зведенні(self, both_services):
-        """Навіть без слова «всього» зведення показує загальне число."""
-        from app.bot.handlers.freeform import handle_free_text
-
-        message = FakeMessage(text="Німеччина в обох базах")
-        await handle_free_text(message, both_services, FakeState({}))
-        text, _markup = _shown(message)
-        assert text.count("Знайдено донорів") == 2
-        assert "по двох базах" in text  # підсумок є, хоч «всього» не казали
-
-    async def test_підсумок_є_і_без_переліку_баз(self, both_services):
-        """Звичайний запит без бази («Нова Зеландія») теж дає підсумок угорі."""
-        from app.bot.handlers.freeform import handle_free_text
-
-        message = FakeMessage(text="Нова Зеландія")
-        await handle_free_text(message, both_services, FakeState({}))
-        text, _markup = _shown(message)
-        assert text.count("Знайдено донорів") == 2
-        assert "по двох базах" in text
-
-    async def test_підсумок_рахує_унікальні_а_не_суму(self, both_services):
-        """Разом ≤ проста сума блоків: спільний домен рахується один раз."""
-        from app.bot.handlers.freeform import handle_free_text
-
-        message = FakeMessage(text="Скільки всього донорів (Меджик + Морди)?")
-        await handle_free_text(message, both_services, FakeState({}))
-        text, _markup = _shown(message)
-        # У фікстурі uk1.co.uk є і в «Меджику», і в «Мордах» — отже перетин є.
-        assert "є в обох базах" in text
-
-    async def test_рядок_перетину_відсутній_коли_перетину_немає(self, empty_mordy_services):
-        """Морди порожні → спільних доменів нема → дужки про перетин немає."""
-        from app.bot.handlers.freeform import handle_free_text
-
-        message = FakeMessage(text="Скільки всього донорів (Меджик + Морди)?")
-        await handle_free_text(message, empty_mordy_services, FakeState({}))
-        text, _markup = _shown(message)
-        assert "по двох базах" in text
-        assert "є в обох базах" not in text
-
-    async def test_у_підсумку_немає_доменів(self, both_services, magic):
-        """Навіть із підсумком жоден домен не потрапляє у відповідь."""
+    async def test_у_зведенні_немає_доменів(self, both_services, magic):
+        """Жоден домен не потрапляє у відповідь (безпековий інваріант)."""
         from app.bot.handlers.freeform import handle_free_text
 
         message = FakeMessage(text="Скільки всього донорів (Меджик + Морди)?")
@@ -379,8 +340,8 @@ class TestПерелікБазІПідсумок:
             if donor.domain:
                 assert donor.domain not in text
 
-    async def test_явна_одна_база_без_підсумку(self, both_services):
-        """«Морди Німеччина» — одна картка, підсумку по базах немає."""
+    async def test_явна_одна_база_це_картка(self, both_services):
+        """«Морди Німеччина» — одна картка, не зведення."""
         from app.bot.handlers.freeform import handle_free_text
 
         message = FakeMessage(text="Морди Німеччина")
@@ -388,7 +349,6 @@ class TestПерелікБазІПідсумок:
         text, markup = _shown(message)
         assert text.count("Знайдено донорів") == 1
         assert "res:filter" in _codes(markup)
-        assert "по двох базах" not in text
 
 
 class TestНеЗрозумівЗапит:

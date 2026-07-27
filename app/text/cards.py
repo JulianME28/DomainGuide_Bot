@@ -523,16 +523,15 @@ def render_compact_block(result: QueryResult, *, dropped_alt_base: str | None = 
     return "\n".join(lines)
 
 
-def render_both_bases(query, blocks: list[str], *, total=None, explicit_both: bool = False) -> str:
+def render_both_bases(query, blocks: list[str], *, explicit_both: bool = False) -> str:
     """Зведене повідомлення по обох базах: спільний рядок запиту + блоки баз.
 
     Фраза-прохання стосується РОЗБОРУ запиту, а не бази, тож пояснення про неї —
     один раз у шапці, а не в кожному блоці. Суміжні країни у зведення не йдуть
     (вони у повній картці за кнопкою «Детально»), тож про них — окрема підказка.
 
-    `total` (CrossBaseTotal або None) — підсумок по УНІКАЛЬНИХ доменах разом.
-    Показуємо його ЗАВЖДИ у ШАПЦІ, одразу під рядком про бази: раз обидві бази
-    видно, загальне число доречне завжди. Унизу підсумок не дублюємо.
+    Підсумкового рядка «Загалом» тут НЕМАЄ: питання «унікальні vs проста сума» ще
+    відкрите, тож поки показуємо лише блоки по кожній базі, без спільного числа.
     `explicit_both` — чи користувач сам назвав обидві бази («(Меджик + Морди)»);
     тоді шапка не пише «базу не вказано», бо це неправда."""
     base_note = (
@@ -550,16 +549,6 @@ def render_both_bases(query, blocks: list[str], *, total=None, explicit_both: bo
     unrecognized_note = _unrecognized_note(query.unrecognized)
     if unrecognized_note:
         header.append(unrecognized_note)
-
-    # Підсумок — одразу під рядком про бази (вгорі), а не в кінці повідомлення.
-    if total is not None:
-        breakdown = " + ".join(
-            f"{escape(title)} {number(count)}" for title, count in total.per_base
-        )
-        if total.overlap > 0:
-            breakdown += f", з них {number(total.overlap)} є в обох базах"
-        header.append(f"📦 <b>Загалом: {number(total.unique)} по двох базах</b>")
-        header.append(f"<i>({breakdown})</i>")
 
     if query.request_hint:
         header.append(
