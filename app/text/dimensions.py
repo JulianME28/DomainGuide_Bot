@@ -119,6 +119,15 @@ class DimensionSpec:
     нікуди не потрапляють.
     """
 
+    bare_is_max: bool = False
+    """Куди йде число БЕЗ слова напрямку («заспамленість 20», «20 вихідних»).
+
+    Для DR і трафіку більше = краще, тож голе число — це МІНІМУМ («трафік 100»
+    = ≥100). Для заспамленості й вихідних лінків менше = краще, тож голе число
+    — це МАКСИМУМ («заспамленість 20» = ≤20). Явні «від»/«до» сильніші за це
+    замовчування завжди.
+    """
+
 
 # ---------------------------------------------------------------------------
 # ПЕРЕЛІК ВИМІРІВ — єдине місце, куди дописувати новий
@@ -155,6 +164,7 @@ SPECS: tuple[DimensionSpec, ...] = (
         numeric=True,
     ),
     # --- аналіз заспамленості: підключений для «Морд» ---
+    # Тут менше = краще, тож голе число без слова напрямку — це МАКСИМУМ («до N»).
     DimensionSpec(
         Dimension.OUTLINKS,
         stems=(
@@ -167,11 +177,13 @@ SPECS: tuple[DimensionSpec, ...] = (
             "outlink",
         ),
         numeric=True,
+        bare_is_max=True,
     ),
     DimensionSpec(
         Dimension.SPAM,
         stems=("заспамлен", "спамн", "спам"),
         numeric=True,
+        bare_is_max=True,
     ),
 )
 
@@ -240,12 +252,40 @@ def _window(text: str, start: int, keyword_end: int) -> tuple[int, int]:
     return start, following.start() if following else len(text)
 
 
-def _read_numbers(window: str) -> tuple[float | None, float | None] | None:
+def _read_lead_number(lead: str, *, bare_is_max: bool) -> tuple[float | None, float | None] | None:
+    """Провідне число ПЕРЕД назвою виміру: «20 вихідних», «до 20 вихідних».
+
+    Викликається лише коли вимір ПЕРШИЙ у тексті — тоді число зліва точно його,
+    а не чужого сусіда. Беремо поріг/число, найближчий до назви (у кінці lead).
+    """
+    thresholds = list(_THRESHOLD.finditer(lead))
+    if thresholds:
+        match = thresholds[-1]
+        value = _to_number(match.group("num"))
+        if value is not None:
+            if _is_minimum(match.group("op"), match.group("neg") is not None):
+                return value, None
+            return None, value
+    numbers = list(re.finditer(_NUMBER, lead))
+    if numbers:
+        value = _to_number(numbers[-1].group(1))
+        if value is not None:
+            return (None, value) if bare_is_max else (value, None)
+    return None
+
+
+def _read_numbers(
+    window: str, *, bare_is_max: bool = False
+) -> tuple[float | None, float | None] | None:
     """Читає «від N до M», «від N», «до M» або просто число після назви.
 
     Кожен поріг класифікується за СВОЇМ словом-оператором (з урахуванням
     заперечення «не»), тому «від» завжди мінімум, «до» завжди максимум, а два
     «від» в одному запиті дають два мінімуми — інверсії бути не може.
+
+    `bare_is_max` — куди йде число БЕЗ слова напрямку: для заспамленості й
+    вихідних лінків це максимум («заспамленість 20» = ≤20), для DR/трафіку —
+    мінімум («трафік 100» = ≥100).
     """
     both = re.search(rf"від\s*{_NUMBER}\s*до\s*{_NUMBER}", window)
     if both:
@@ -265,10 +305,12 @@ def _read_numbers(window: str) -> tuple[float | None, float | None] | None:
     if minimum is not None or maximum is not None:
         return minimum, maximum
 
-    # «трафік 100» — назва й одразу число, без «від».
+    # «трафік 100» — назва й одразу число, без «від». Напрямок за замовчуванням
+    # залежить від виміру: DR/трафік → мінімум, заспамленість/вихідні → максимум.
     bare = re.search(rf"^\W*\w*\W{{0,3}}{_NUMBER}", window)
     if bare:
-        return _to_number(bare.group(1)), None
+        value = _to_number(bare.group(1))
+        return (None, value) if bare_is_max else (value, None)
 
     return None
 
@@ -306,7 +348,17 @@ def resolve_dimensions(text: str) -> tuple[dict[str, DimensionMatch], str]:
         # ПРАВИЛО 2: спершу число (читаємо зі свого вікна, але НЕ затираємо).
         if keyword is not None and spec.numeric:
             start, end = _window(text, keyword.start(), keyword.end())
-            numbers = _read_numbers(text[start:end])
+            numbers = _read_numbers(text[start:end], bare_is_max=spec.bare_is_max)
+            # Число ПЕРЕД назвою («20 вихідних», «до 20 вихідних») — тільки для
+            # заспамленості/вихідних (bare_is_max) і лише коли вимір ПЕРШИЙ у
+            # тексті, інакше воно належить сусідові зліва. Для DR/трафіку діє
+            # давнє правило: число перед назвою — не фільтр.
+            if (
+                numbers is None
+                and spec.bare_is_max
+                and not _ANY_KEYWORD.search(text[: keyword.start()])
+            ):
+                numbers = _read_lead_number(text[: keyword.start()], bare_is_max=spec.bare_is_max)
             if numbers is not None:
                 found[spec.dimension] = DimensionMatch(spec.dimension, False, *numbers)
                 continue

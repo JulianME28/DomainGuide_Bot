@@ -565,40 +565,43 @@ class TestМайстерGEO:
         assert "wizard:back:geo" in _callback_data(markup)
 
     async def test_обране_значення_потрапляє_у_фільтр(self, services):
-        """Кнопка «Від 25» задає outlinks_min і веде далі на спам."""
+        """Кнопка «До 25» задає outlinks_max (менше = краще) і веде далі на спам."""
         from app.bot.handlers.wizard import pick_outlinks, pick_spam
 
         state = FakeState({"section_key": "mordy"})
         await pick_outlinks(FakeCallback("wizard:outlinks:25"), services, state)
-        assert state._data["outlinks_min"] == 25
+        assert state._data["outlinks_max"] == 25
+        assert state._data["outlinks_min"] is None
         assert state.current_state == Wizard.spam
 
         await pick_spam(FakeCallback("wizard:spam:5"), services, state)
-        assert state._data["spam_min"] == 5
+        assert state._data["spam_max"] == 5
+        assert state._data["spam_min"] is None
         assert state.current_state == Wizard.confirm
 
     async def test_не_важливо_знімає_фільтр(self, services):
         from app.bot.handlers.wizard import pick_outlinks
 
-        state = FakeState({"section_key": "mordy", "outlinks_min": 50})
+        state = FakeState({"section_key": "mordy", "outlinks_max": 50})
         await pick_outlinks(FakeCallback("wizard:outlinks:any"), services, state)
         assert state._data["outlinks_min"] is None
         assert state._data["outlinks_max"] is None
 
     async def test_текстом_теж_можна(self, services):
-        """Число текстом на кроці працює так само, як кнопка."""
+        """Число текстом на кроці працює так само, як кнопка — це «до N»."""
         from app.bot.handlers.wizard import type_spam
 
         state = FakeState({"section_key": "mordy"})
         await type_spam(FakeMessage(text="20"), services, state)
-        assert state._data["spam_min"] == 20
+        assert state._data["spam_max"] == 20
+        assert state._data["spam_min"] is None
         assert state.current_state == Wizard.confirm
 
     def test_обране_значення_в_резюме_морд(self):
-        query = DonorQuery(section_key="mordy", outlinks_min=25, spam_min=5)
+        query = DonorQuery(section_key="mordy", outlinks_max=25, spam_max=5)
         text = summary_lines(query, "Морди", tracks_spam=True)
-        assert "Вихідні лінки" in text and "від 25" in text
-        assert "Заспамленість" in text and "від 5" in text
+        assert "Вихідні лінки" in text and "до 25" in text
+        assert "Заспамленість" in text and "до 5" in text
 
     def test_резюме_меджика_без_нових_рядків(self):
         query = DonorQuery(section_key="magic", dr_min=30)
@@ -611,11 +614,11 @@ class TestМайстерGEO:
         from app.bot.handlers.wizard import drop_dimension
 
         state = FakeState(
-            {"section_key": "mordy", "outlinks_min": 25, "spam_min": 5, FRESH_KEY: []}
+            {"section_key": "mordy", "outlinks_max": 25, "spam_max": 5, FRESH_KEY: []}
         )
         await drop_dimension(FakeCallback("wizard:drop:outlinks"), services, state)
-        assert state._data["outlinks_min"] is None
-        assert state._data["spam_min"] == 5, "заспамленість чіпати не мали"
+        assert state._data["outlinks_max"] is None
+        assert state._data["spam_max"] == 5, "заспамленість чіпати не мали"
 
     async def test_навігація_назад_не_ламає_стан(self, services):
         from app.bot.handlers.wizard import go_back

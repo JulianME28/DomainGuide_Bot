@@ -71,13 +71,14 @@ STEP_DR = "📈 <b>Фільтр по DR</b>\n\nОберіть варіант а�
 
 STEP_OUTLINKS = (
     "🔗 <b>Фільтр по вихідних лінках</b>\n\n"
-    "Скільки щонайменше вихідних лінків. Оберіть варіант або напишіть число."
+    "Скільки щонайбільше вихідних лінків (менше = краще). Оберіть варіант або "
+    "напишіть число — воно означатиме «до N»."
 )
 
 STEP_SPAM = (
     "🧪 <b>Фільтр по заспамленості</b>\n\n"
-    "У <b>кількості</b> заспамлених лінків (не у відсотках). Оберіть варіант "
-    "або напишіть число."
+    "У <b>кількості</b> заспамлених лінків (не у відсотках), менше = краще. "
+    "Оберіть варіант або напишіть число — воно означатиме «до N»."
 )
 
 
@@ -487,15 +488,15 @@ async def pick_outlinks(callback: CallbackQuery, services: BotServices, state: F
         await callback.answer()
         if callback.message:
             await callback.message.answer(
-                "✍️ Напишіть мінімальну к-сть вихідних лінків, наприклад <code>25</code>",
+                "✍️ Напишіть максимальну к-сть вихідних лінків (до N), напр. <code>25</code>",
                 reply_markup=cancel_only(),
             )
         return
 
     is_any = choice == "any"
     await state.update_data(
-        outlinks_min=None if is_any else float(choice),
-        outlinks_max=None,
+        outlinks_min=None,
+        outlinks_max=None if is_any else float(choice),
     )
     await _mark_fresh(state, Dimension.OUTLINKS)
     await _after_outlinks(callback, services, state)
@@ -511,7 +512,7 @@ async def type_outlinks(message: Message, services: BotServices, state: FSMConte
         )
         return
 
-    await state.update_data(outlinks_min=value, outlinks_max=None)
+    await state.update_data(outlinks_min=None, outlinks_max=value)
     await _mark_fresh(state, Dimension.OUTLINKS)
     await _after_outlinks(message, services, state)
 
@@ -529,15 +530,15 @@ async def pick_spam(callback: CallbackQuery, services: BotServices, state: FSMCo
         await callback.answer()
         if callback.message:
             await callback.message.answer(
-                "✍️ Напишіть мінімальну к-сть заспамлених лінків, наприклад <code>20</code>",
+                "✍️ Напишіть максимальну к-сть заспамлених лінків (до N), напр. <code>20</code>",
                 reply_markup=cancel_only(),
             )
         return
 
     is_any = choice == "any"
     await state.update_data(
-        spam_min=None if is_any else float(choice),
-        spam_max=None,
+        spam_min=None,
+        spam_max=None if is_any else float(choice),
     )
     await _mark_fresh(state, Dimension.SPAM)
     await _goto_confirm(callback, services, state)
@@ -553,7 +554,7 @@ async def type_spam(message: Message, services: BotServices, state: FSMContext) 
         )
         return
 
-    await state.update_data(spam_min=value, spam_max=None)
+    await state.update_data(spam_min=None, spam_max=value)
     await _mark_fresh(state, Dimension.SPAM)
     await _goto_confirm(message, services, state)
 

@@ -308,11 +308,13 @@ def passes_metrics(donor: Donor, query: DonorQuery) -> bool:
         and _in_range(donor.spammed, query.spam_min, query.spam_max)
     ):
         return False
-    # «Незаспамлені» = ідеально чисті: заспамленість РІВНО 0 і вихідних > 0.
-    # Мертвий сайт (вихідних 0, заспамлених 0) — не «чистий», а непрацюючий
-    # (дані просто не оновились), тож у «незаспамлені» НЕ входить. Це та сама
-    # логіка, що й у розподілі, де група «0,0» зарахована в найгіршу.
-    return query.spam_max != 0 or (donor.outlinks is not None and donor.outlinks > 0)
+    # «До N» по заспамленості/вихідних виключає МЕРТВІ сайти (0 вихідних): у цих
+    # стовпцях менше = краще, але непрацюючий сайт з 0 вихідних — це не «чистий»,
+    # а відсутній (як і в розподілі, де група «0,0» — найгірша). Тож «≤ N» — це
+    # 1..N, без нуля. «Від N» дохлих і так не пропускає (їхні значення нижчі).
+    if query.spam_max is not None or query.outlinks_max is not None:
+        return donor.outlinks is not None and donor.outlinks > 0
+    return True
 
 
 def passes_core(donor: Donor, query: DonorQuery) -> bool:

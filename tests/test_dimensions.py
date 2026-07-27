@@ -237,6 +237,42 @@ class TestНапрямПорогу:
         assert parsed.query.dr_max is None
 
 
+class TestЗамовчуванняНапрямку:
+    """Голе число: для заспамленості/вихідних — «до N», для DR/трафіку — «від N»."""
+
+    def test_заспамленість_голе_число_це_максимум(self):
+        q = parse("Морди заспамленість 20").query
+        assert (q.spam_min, q.spam_max) == (None, 20)
+
+    def test_вихідні_голе_число_це_максимум(self):
+        q = parse("Морди 20 вихідних").query
+        assert (q.outlinks_min, q.outlinks_max) == (None, 20)
+
+    def test_до_перед_вихідними(self):
+        q = parse("Морди до 20 вихідних лінків").query
+        assert (q.outlinks_min, q.outlinks_max) == (None, 20)
+
+    def test_від_лишається_доступним(self):
+        """«від N» для заспамленості/вихідних працює — для відсіву найбрудніших."""
+        assert parse("заспамленість від 80").query.spam_min == 80
+        assert parse("вихідних від 25").query.outlinks_min == 25
+
+    def test_трафік_і_dr_не_зачеплені(self):
+        assert parse("трафік 100").query.traffic_min == 100
+        assert parse("трафік 100").query.traffic_max is None
+        assert parse("DR 30").query.dr_min == 30
+        assert parse("DR 30").query.dr_max is None
+
+    def test_число_перед_трафіком_не_фільтр(self):
+        """Правило DR/трафіку не змінилось: число перед назвою — не фільтр."""
+        assert parse("50 трафік").query.traffic_min is None
+
+    def test_напрямок_у_рядку_запиту(self):
+        assert "вихідні ≤ 20" in parse("Морди 20 вихідних").query.describe()
+        assert "заспамленість ≤ 20" in parse("Морди заспамленість 20").query.describe()
+        assert "заспамленість ≥ 80" in parse("заспамленість від 80").query.describe()
+
+
 class TestВимірЧитаєЛишеСвійШматок:
     """Число з чужого шматка не має перетікати до сусіда.
 

@@ -284,16 +284,18 @@ class DonorQuery:
         # Вихідні лінки й заспамленість згадуємо лише коли їх реально
         # фільтрують — інакше вони засмічували б опис запитів до «Меджика»,
         # де таких колонок немає.
+        # Заспамленість і вихідні: менше = краще, тож напрямок показуємо явно
+        # знаком «≤»/«≥», щоб «заспамленість 20» не сплутали з «від 20».
         if self.outlinks_min is not None or self.outlinks_max is not None:
-            parts.append(_describe_range("вихідних лінків", self.outlinks_min, self.outlinks_max))
+            parts.append(_describe_bound("вихідні", self.outlinks_min, self.outlinks_max))
         if self.spam_min is not None or self.spam_max is not None:
             # «Незаспамлені» (заспамленість рівно 0) — це «ідеально чисті»: мертві
-            # сайти з 0 вихідних сюди не входять. Кажемо про це прямо, бо «до 0»
+            # сайти з 0 вихідних сюди не входять. Кажемо про це прямо, бо «≤ 0»
             # звучало б так, ніби порожні/непрацюючі теж рахуються.
             if self.spam_max == 0 and self.spam_min in (None, 0):
                 parts.append("тільки незаспамлені (заспамленість 0, без мертвих сайтів)")
             else:
-                parts.append(_describe_range("заспамленість", self.spam_min, self.spam_max))
+                parts.append(_describe_bound("заспамленість", self.spam_min, self.spam_max))
 
         return ", ".join(part for part in parts if part) or "без фільтрів"
 
@@ -307,6 +309,20 @@ def _describe_range(label: str, minimum: float | None, maximum: float | None) ->
     if minimum is None:
         return f"{label} до {_number(maximum)}"
     return f"{label} від {_number(minimum)} до {_number(maximum)}"
+
+
+def _describe_bound(label: str, minimum: float | None, maximum: float | None) -> str:
+    """Описує поріг знаком «≤»/«≥» — для вимірів, де менше = краще.
+
+    «вихідні ≤ 20», «заспамленість ≥ 80», «вихідні 5–20». Так напрямок видно
+    з першого погляду, без плутанини «до/від»."""
+    if minimum is None and maximum is None:
+        return f"{label} без обмеження"
+    if minimum is None:
+        return f"{label} ≤ {_number(maximum)}"
+    if maximum is None:
+        return f"{label} ≥ {_number(minimum)}"
+    return f"{label} {_number(minimum)}–{_number(maximum)}"
 
 
 def _number(value: float | None) -> str:

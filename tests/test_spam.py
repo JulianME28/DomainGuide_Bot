@@ -137,13 +137,12 @@ class TestНульВихідних:
         assert result.outlinks_sample == 2
         assert result.avg_outlinks == 8.0  # (16 + 0) / 2
 
-    async def test_фільтр_заспамленості_у_кількості_бере_нуль(self, mordy):
-        """Фільтр — у кількості: донор із 0 заспамлених проходить «до N».
-
-        m4 (0 вихідних, 0 заспамлених) має spammed=0 ≤ 100 → проходить. Не
-        проходить лише m6 з ПОРОЖНІМ значенням спаму (як донор без DR)."""
+    async def test_чистий_донор_проходить_а_мертвий_ні(self, mordy):
+        """«До 100 заспамлених»: чистий uk1 (0 спаму, 10 вихідних) проходить, а
+        мертвий m4 (0 вихідних) — ні. Не проходить і m6 (порожній спам)."""
         result = run_query(mordy, mordy_query(spam_max=100))
-        assert result.core.count == MORDY_DONORS - 1  # усі, крім m6 (порожній спам)
+        # усі, крім m6 (порожній спам) і m4 (мертвий, 0 вихідних)
+        assert result.core.count == MORDY_DONORS - 2
 
     async def test_нуль_вихідних_лишається_в_загальній_кількості(self, mordy):
         """Без фільтра по заспамленості m4 (0 вихідних) присутній у базі."""
@@ -259,21 +258,21 @@ class TestСередніМорд:
 
 class TestФільтри:
     async def test_фільтр_вихідних_максимум(self, mordy):
-        """До 10 вихідних: m4(0), uk1(10), m7(8) = 3."""
+        """До 10 вихідних = 1..10: uk1(10), m7(8) = 2. Мертвий m4(0) НЕ входить."""
         result = run_query(mordy, mordy_query(outlinks_max=10))
-        assert result.core.count == 3
+        assert result.core.count == 2
 
-    async def test_фільтр_вихідних_нуль(self, mordy):
-        """Рівно 0 вихідних: тільки m4."""
+    async def test_до_нуля_вихідних_нікого(self, mordy):
+        """«До 0 вихідних» = 1..0 = порожньо: 0 не входить (мертві сайти)."""
         result = run_query(mordy, mordy_query(outlinks_max=0))
-        assert result.core.count == 1
+        assert result.core.count == 0
 
     async def test_фільтр_заспамленості_максимум(self, mordy):
-        """До 30 заспамлених: m1(10), m2(5), m4(0), uk1(0), m7(4) = 5.
+        """До 30 заспамлених: m1(10), m2(5), uk1(0), m7(4) = 4.
 
-        glob(52) відсіявся; m6 із порожнім значенням спаму не проходить."""
+        glob(52) відсіявся; мертвий m4(0,0) НЕ входить; m6 (порожній спам) — ні."""
         result = run_query(mordy, mordy_query(spam_max=30))
-        assert result.core.count == 5
+        assert result.core.count == 4
 
     async def test_фільтр_заспамленості_мінімум(self, mordy):
         """Від 50 заспамлених: лише glob(52) = 1."""
@@ -281,9 +280,9 @@ class TestФільтри:
         assert result.core.count == 1
 
     async def test_комбінація_вихідних_і_заспамленості(self, mordy):
-        """До 60 вихідних і до 30 заспамлених: m1,m2,m4,uk1,m7 = 5 (glob 52 — ні)."""
+        """До 60 вихідних і до 30 заспамлених: m1,m2,uk1,m7 = 4 (glob 52 і мертвий m4 — ні)."""
         result = run_query(mordy, mordy_query(outlinks_max=60, spam_max=30))
-        assert result.core.count == 5
+        assert result.core.count == 4
 
     async def test_фільтр_вихідних_на_меджику_ігнорується(self, magic):
         """У «Меджику» цих колонок немає — фільтр не має відсіяти геть усіх."""

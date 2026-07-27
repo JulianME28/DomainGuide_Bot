@@ -38,11 +38,11 @@ DROP_ORDER = (
     Dimension.SPAM,
 )
 
-# Швидкі варіанти для метрик у майстрі. Усі — пороги «від N».
+# Швидкі варіанти для метрик у майстрі. DR і трафік — пороги «від N».
 TRAFFIC_OPTIONS = (1, 10, 50, 100, 500)
 DR_OPTIONS = (10, 20, 30, 40, 50)
-# Вихідні лінки й заспамленість — під реальний розподіл «Морд» (медіана
-# вихідних 5, заспамлених 2; база сильно скошена вліво).
+# Вихідні лінки й заспамленість — пороги «до N» (менше = краще), під реальний
+# розподіл «Морд» (медіана вихідних 5, заспамлених 2; база скошена вліво).
 OUTLINKS_OPTIONS = (10, 25, 50, 100)
 SPAM_OPTIONS = (5, 20, 50, 100)
 
@@ -217,12 +217,12 @@ def wizard_dr() -> InlineKeyboardMarkup:
 def wizard_outlinks() -> InlineKeyboardMarkup:
     """Крок «Вихідні лінки» — лише для баз із цією колонкою («Морди»).
 
-    Механіка як у трафіку/DR: пороги «від N» плюс «не важливо».
+    Тут менше = краще, тож пороги — «до N» (максимум) плюс «не важливо».
     """
     builder = InlineKeyboardBuilder()
     builder.button(text="Не важливо", callback_data="wizard:outlinks:any")
     for value in OUTLINKS_OPTIONS:
-        builder.button(text=f"Від {value}", callback_data=f"wizard:outlinks:{value}")
+        builder.button(text=f"До {value}", callback_data=f"wizard:outlinks:{value}")
     builder.button(text="✍️ Ввести вручну", callback_data="wizard:outlinks:manual")
     _add_navigation(builder, back="wizard:back:dr")
     builder.adjust(3, 2, 1, 3)
@@ -230,11 +230,14 @@ def wizard_outlinks() -> InlineKeyboardMarkup:
 
 
 def wizard_spam() -> InlineKeyboardMarkup:
-    """Крок «Заспамленість» — у КІЛЬКОСТІ заспамлених лінків, лише «Морди»."""
+    """Крок «Заспамленість» — у КІЛЬКОСТІ заспамлених лінків, лише «Морди».
+
+    Менше = краще, тож пороги — «до N» (максимум) плюс «не важливо».
+    """
     builder = InlineKeyboardBuilder()
     builder.button(text="Не важливо", callback_data="wizard:spam:any")
     for value in SPAM_OPTIONS:
-        builder.button(text=f"Від {value}", callback_data=f"wizard:spam:{value}")
+        builder.button(text=f"До {value}", callback_data=f"wizard:spam:{value}")
     builder.button(text="✍️ Ввести вручну", callback_data="wizard:spam:manual")
     _add_navigation(builder, back="wizard:back:outlinks")
     builder.adjust(3, 2, 1, 3)

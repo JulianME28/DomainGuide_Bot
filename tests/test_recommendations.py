@@ -149,13 +149,14 @@ class TestЯдроІЗапас:
     async def test_морди_послаблення_їхніх_метрик(self, mordy):
         """Для «Морд» послаблення враховує вихідні лінки й заспамленість.
 
-        Німеччина трикроково = m1,m4,m7 (зона) + m2 (GEO de). Вихідні ≤10 лишає
-        ядро m4(0),m7(8); знижуємо до ≤20 → додаються m1(16, зона) і m2(20, GEO).
+        Німеччина трикроково = m1,m4,m7 (зона) + m2 (GEO de). Вихідні ≤10 = 1..10
+        лишає ядро m7(8); мертвий m4(0) НЕ входить. Послаблюємо до ≤20 →
+        додаються m1(16, зона) і m2(20, GEO).
         """
         query = DonorQuery(section_key="mordy", country=country_by_code("de"), outlinks_max=10)
         group = reserve_group(mordy, query)
         assert group is not None
-        assert group.core_count == 2  # m4(0), m7(8)
+        assert group.core_count == 1  # лише m7(8); мертвий m4(0) виключено
         assert group.reserve_count == 2  # m1(16, зона) і m2(20, GEO): не ≤10, але ≤20
         assert "вихідні лінки до 20 замість 10" in group.reserve_label
 
