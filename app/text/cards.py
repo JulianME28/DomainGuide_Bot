@@ -238,6 +238,7 @@ def render_result(
     *,
     recommendations: Recommendations | None = None,
     dropped_alt_base: str | None = None,
+    ai_explained: bool = False,
 ) -> str:
     """Головна картка результату.
 
@@ -250,14 +251,23 @@ def render_result(
       6. МОВНИЙ РЯДОК — завжди останній
 
     dropped_alt_base — назва бази, де є відкинуті виміри (для попередження).
+    ai_explained — чи запит склав ШІ. Тоді рядок запиту підписуємо «ШІ зрозумів
+    як», щоб було видно трактування й можна було виправити.
     """
     if not result.available:
         return render_unavailable(result)
 
     core = result.core
+    # Коли фільтр склав ШІ, чесно кажемо, ЯК він зрозумів запит: база + опис.
+    query_line = (
+        f"🧠 <b>ШІ зрозумів як:</b> {escape(result.section_title)}, "
+        f"{escape(result.query.describe())}"
+        if ai_explained
+        else f"🔎 <b>Запит:</b> {escape(result.query.describe())}"
+    )
     lines = [
         f"🗂 <b>База:</b> {escape(result.section_title)}",
-        f"🔎 <b>Запит:</b> {escape(result.query.describe())}",
+        query_line,
     ]
 
     # Помітка про застарілі дані — одразу під запитом, щоб її не проґавили.
@@ -341,11 +351,13 @@ def render_multi_country(
     result: MultiCountryResult,
     *,
     suggestions: tuple[Suggestion, ...] = (),
+    ai_explained: bool = False,
 ) -> str:
     """Картка запиту по СПИСКУ країн: ексклюзивний розклад по країнах.
 
     Порядок: база й запит → розклад по країнах (спадання, з розкладом складових)
     → пояснення про ексклюзивність → «Разом» → середні → суміжні → нерозпізнані.
+    ai_explained — чи фільтр склав ШІ (тоді рядок запиту підписуємо «ШІ зрозумів як»).
     """
     if not result.available:
         return (
@@ -353,9 +365,15 @@ def render_multi_country(
             f"⚠️ База тимчасово недоступна.\n<i>{escape(result.error or '')}</i>"
         )
 
+    query_line = (
+        f"🧠 <b>ШІ зрозумів як:</b> {escape(result.section_title)}, "
+        f"{escape(result.query.describe())}"
+        if ai_explained
+        else f"🔎 <b>Запит:</b> {escape(result.query.describe())}"
+    )
     lines = [
         f"🗂 <b>База:</b> {escape(result.section_title)}",
-        f"🔎 <b>Запит:</b> {escape(result.query.describe())}",
+        query_line,
     ]
     if result.stale:
         lines.append("")

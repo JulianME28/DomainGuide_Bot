@@ -704,3 +704,72 @@ class TestШІФолбек:
         assert len(spy.calls) == 1, "незрозумілий запит має піти в ШІ"
         # show_result відпрацював: «Рахую...» → картка.
         assert message.answers and message.answers[0][0] == STATUS_TEXT
+
+
+class TestІндивідуальнийЗапит:
+    """Кнопка «Індивідуальний запит»: текст ЗАВЖДИ через ШІ (не словником)."""
+
+    def _services(self, repository, columns_config, ai):
+        return BotServices(
+            settings=make_settings(),
+            columns=columns_config,
+            repository=repository,
+            action_log=ActionLog(),
+            ai=ai,
+        )
+
+    def test_кнопка_названа_індивідуальний_запит(self):
+        from app.bot.keyboards import main_menu
+
+        markup = main_menu()
+        assert "ai:start" in _callback_data(markup)
+        texts = [b.text for row in markup.inline_keyboard for b in row]
+        assert any("Індивідуальний запит" in t for t in texts)
+        assert not any("Майстер-запит" in t for t in texts)
+
+    async def test_кличе_ші_навіть_коли_словник_зрозумів_би(self, repository, columns_config):
+        """Головна відмінність режиму: ШІ викликається навіть на «Німеччина»."""
+        from app.bot.handlers.ai import receive_ai_query
+
+        spy = SpyAI(DonorQuery(section_key="magic", country=country_by_code("de")))
+        services = self._services(repository, columns_config, spy)
+        message = FakeMessage(text="Німеччина")  # словник зрозумів би й сам
+        await receive_ai_query(message, services, FakeState({}))
+
+        assert spy.calls == [(1, "Німеччина")]  # ШІ таки викликано
+        card = message.sents[-1].edits[-1][0]
+        assert "ШІ зрозумів як" in card
+
+    async def test_ші_вимкнено_повідомлення_без_краху(self, repository, columns_config):
+        from app.bot.handlers.ai import receive_ai_query
+
+        services = self._services(repository, columns_config, None)  # ШІ вимкнено
+        message = FakeMessage(text="німецькі мало заспамлені")
+        await receive_ai_query(message, services, FakeState({}))
+
+        assert any("вимкнено" in a[0] for a in message.answers)
+        assert all(sent.edits == [] for sent in message.sents)  # картки немає
+
+    async def test_ші_не_впорався_повідомлення(self, repository, columns_config):
+        from app.bot.handlers.ai import receive_ai_query
+
+        services = self._services(repository, columns_config, SpyAI(None))
+        message = FakeMessage(text="абракадабра")
+        await receive_ai_query(message, services, FakeState({}))
+
+        shown = [e[0] for sent in message.sents for e in sent.edits] + [a[0] for a in message.answers]
+        assert any("не зміг" in t for t in shown)
+
+    async def test_ручний_виклик_рахується_лічильником(self, repository, columns_config):
+        """Ліміт/лічильник (наявні) застосовуються й до ручних викликів ШІ."""
+        from app.bot.handlers.ai import receive_ai_query
+        from app.llm.service import build_ai_service
+        from tests.test_llm import ai_settings, anthropic_response, fake_post
+
+        service = build_ai_service(
+            ai_settings(), http_post=fake_post(anthropic_response('{"country":"de"}'))
+        )
+        services = self._services(repository, columns_config, service)
+        assert service.calls_today == 0
+        await receive_ai_query(FakeMessage(text="німецькі донори"), services, FakeState({}))
+        assert service.calls_today == 1  # ручний виклик враховано

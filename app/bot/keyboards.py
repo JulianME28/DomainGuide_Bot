@@ -53,7 +53,7 @@ def main_menu(*, is_admin: bool = False) -> InlineKeyboardMarkup:
     builder.button(text="🪄 Меджик", callback_data="menu:section:magic")
     builder.button(text="🧱 Морди", callback_data="menu:section:mordy")
     builder.button(text="📩 Сабміти", callback_data="menu:section:submits")
-    builder.button(text="🧙 Майстер-запит", callback_data="wizard:start")
+    builder.button(text="🧠 Індивідуальний запит", callback_data="ai:start")
     builder.button(text="📊 Статус", callback_data="menu:status")
     builder.button(text="❓ Допомога", callback_data="menu:help")
     if is_admin:

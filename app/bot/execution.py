@@ -31,6 +31,7 @@ from app.analytics.recommendations import (
 )
 from app.bot.context import BotServices
 from app.bot.keyboards import back_to_menu, both_bases_menu, result_menu
+from app.bot.states import query_to_state
 from app.logging_setup import get_logger
 from app.text.cards import (
     render_both_bases,
@@ -92,7 +93,9 @@ def _supports_all(section, dimensions: frozenset[str]) -> bool:
     return True
 
 
-async def execute(services: BotServices, query: DonorQuery) -> ExecutedQuery:
+async def execute(
+    services: BotServices, query: DonorQuery, *, ai_explained: bool = False
+) -> ExecutedQuery:
     """Виконує запит і складає картку результату."""
     dataset = await services.repository.get(query.section_key)
     result, recommendations = await asyncio.to_thread(_compute, dataset, query)
@@ -105,6 +108,7 @@ async def execute(services: BotServices, query: DonorQuery) -> ExecutedQuery:
             result,
             recommendations=recommendations,
             dropped_alt_base=alt_base[1] if alt_base else None,
+            ai_explained=ai_explained,
         ),
         alt_base=alt_base,
     )
@@ -171,6 +175,8 @@ async def show_result(
     services: BotServices,
     query: DonorQuery,
     user_id: int,
+    *,
+    ai_explained: bool = False,
 ) -> ExecutedQuery | None:
     """Рахує запит і показує картку з кнопками.
 
@@ -178,10 +184,10 @@ async def show_result(
     результатом — так користувач бачить, що бот працює (ТЗ, розділ 27).
 
     Запит по СПИСКУ країн має інший вигляд відповіді (розклад по країнах +
-    унікальний підсумок), тому йде окремим шляхом.
-    """
+    унікальний підсумок), тому йде окремим шляхом. `ai_explained` — чи фільтр
+    склав ШІ (тоді картка підписує рядок запиту «ШІ зрозумів як»)."""
     if query.is_multi_country:
-        await show_multi_country(target, services, query, user_id)
+        await show_multi_country(target, services, query, user_id, ai_explained=ai_explained)
         return None
 
     message = target.message if isinstance(target, CallbackQuery) else target
@@ -191,7 +197,7 @@ async def show_result(
     status = await message.answer(STATUS_TEXT)
 
     try:
-        executed = await execute(services, query)
+        executed = await execute(services, query, ai_explained=ai_explained)
     except Exception:
         logger.exception("Не вдалося виконати запит")
         await status.edit_text(
@@ -220,6 +226,8 @@ async def show_multi_country(
     services: BotServices,
     query: DonorQuery,
     user_id: int,
+    *,
+    ai_explained: bool = False,
 ) -> None:
     """Рахує й показує запит по СПИСКУ країн: розклад + унікальний підсумок."""
     message = target.message if isinstance(target, CallbackQuery) else target
@@ -250,7 +258,8 @@ async def show_multi_country(
     # У журнал — лише зведене число, без доменів.
     services.action_log.add(user_id, render_multi_summary(result))
     await status.edit_text(
-        render_multi_country(result, suggestions=suggestions), reply_markup=back_to_menu()
+        render_multi_country(result, suggestions=suggestions, ai_explained=ai_explained),
+        reply_markup=back_to_menu(),
     )
 
 
@@ -277,6 +286,64 @@ async def resolve_with_ai(services: BotServices, user_id: int, text: str) -> Don
     if services.ai is None:
         return None
     return await services.ai.try_interpret(user_id, text)
+
+
+AI_DISABLED_TEXT = (
+    "🧠 <b>ШІ зараз вимкнено.</b>\n\n"
+    "Індивідуальний запит потребує ключа ШІ у налаштуваннях. Поки що скористайтеся "
+    "звичайним запитом або кнопками меню — /start."
+)
+
+AI_FAILED_TEXT = (
+    "🧠 <b>ШІ не зміг обробити запит.</b>\n\n"
+    "Можливо, він тимчасово недоступний або вичерпано ліміт запитів. Спробуйте "
+    "трохи згодом або скористайтеся кнопками меню — /start."
+)
+
+AI_STATUS_TEXT = "🧠 Питаю ШІ..."
+
+
+async def run_ai_query(
+    target: Message | CallbackQuery,
+    services: BotServices,
+    state,
+    user_id: int,
+    text: str,
+) -> None:
+    """Розбирає текст ЧЕРЕЗ ШІ й показує картку з підписом «ШІ зрозумів як…».
+
+    ШІ лише перекладає текст у фільтр (базу/країну/метрики); валідація по
+    whitelist і підрахунок — як завжди (ТЗ §5, донорів ШІ не бачить). Ліміт і
+    лічильник викликів застосовуються самі (через AIService.try_interpret).
+    Будь-яка проблема з ШІ → зрозуміле повідомлення, без падіння."""
+    message = target.message if isinstance(target, CallbackQuery) else target
+    if message is None:
+        raise RuntimeError("Немає повідомлення, у яке можна відповісти")
+
+    if services.ai is None:
+        await message.answer(AI_DISABLED_TEXT, reply_markup=back_to_menu())
+        return
+
+    status = await message.answer(AI_STATUS_TEXT)
+    query = await resolve_with_ai(services, user_id, text.strip())
+    if query is None:
+        await status.edit_text(AI_FAILED_TEXT, reply_markup=back_to_menu())
+        return
+
+    # Розпізнане ШІ стає активним запитом (як звичайний), стан скидаємо.
+    await state.set_state(None)
+    await state.update_data(**query_to_state(query))
+    # Прибираємо статус «Питаю ШІ...» і показуємо картку окремим повідомленням.
+    await _delete_or_ignore(status)
+    await show_result(message, services, query, user_id, ai_explained=True)
+
+
+async def _delete_or_ignore(status) -> None:
+    """Прибирає тимчасове повідомлення «Питаю ШІ...», не падаючи на дрібницях."""
+    try:
+        await status.delete()
+    except Exception:
+        logger.debug("Не вдалося видалити статус-повідомлення ШІ", exc_info=True)
 
 
 async def safe_edit(
