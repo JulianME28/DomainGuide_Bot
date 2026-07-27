@@ -16,7 +16,7 @@ import re
 from app.analytics.query import DonorQuery
 from app.dictionary.countries import COUNTRIES, country_by_code
 from app.dictionary.languages import LANGUAGES, language_by_code
-from app.llm.provider import AnthropicProvider
+from app.llm.provider import LLMProvider
 
 # Розділи, які ШІ може обрати (лише ті, що читають дані).
 ALLOWED_SECTIONS = frozenset({"magic", "mordy"})
@@ -134,7 +134,7 @@ def interpret_json(payload: dict) -> DonorQuery | None:
 class LLMInterpreter:
     """Обгортка: текст → (виклик моделі) → перевірений DonorQuery або None."""
 
-    def __init__(self, provider: AnthropicProvider, *, catalog: str | None = None) -> None:
+    def __init__(self, provider: LLMProvider, *, catalog: str | None = None) -> None:
         self._provider = provider
         self._system = f"{SYSTEM_PROMPT}\n{catalog or build_catalog()}"
 

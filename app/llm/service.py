@@ -18,7 +18,7 @@ from collections.abc import Callable
 
 from app.analytics.query import DonorQuery
 from app.llm.interpreter import LLMInterpreter
-from app.llm.provider import AnthropicProvider, HttpPost
+from app.llm.provider import AnthropicProvider, HttpPost, LLMProvider, OpenAIProvider
 from app.logging_setup import get_logger
 from app.settings import Settings
 
@@ -107,6 +107,22 @@ class AIService:
         return query
 
 
+def _build_provider(settings: Settings, http_post: HttpPost | None) -> LLMProvider:
+    """Обирає провайдера ШІ за LLM_PROVIDER (перемикання лише через .env).
+
+    Контракт однаковий, тож решта коду (інтерпретатор, сервіс) не залежить від
+    того, який саме API за цим викликом."""
+    common = {
+        "api_key": settings.llm_api_key,
+        "model": settings.llm_model,
+        "timeout_seconds": settings.llm_timeout_seconds,
+        "http_post": http_post,
+    }
+    if settings.llm_provider == "openai":
+        return OpenAIProvider(**common)
+    return AnthropicProvider(**common)
+
+
 def build_ai_service(settings: Settings, *, http_post: HttpPost | None = None) -> AIService | None:
     """Збирає сервіс ШІ з налаштувань. None — коли ШІ вимкнено (немає ключа).
 
@@ -115,12 +131,7 @@ def build_ai_service(settings: Settings, *, http_post: HttpPost | None = None) -
     if not settings.llm_enabled:
         return None
 
-    provider = AnthropicProvider(
-        api_key=settings.llm_api_key,
-        model=settings.llm_model,
-        timeout_seconds=settings.llm_timeout_seconds,
-        http_post=http_post,
-    )
+    provider = _build_provider(settings, http_post)
     return AIService(
         LLMInterpreter(provider),
         limit=settings.llm_calls_limit,

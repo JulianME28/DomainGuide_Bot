@@ -1,9 +1,10 @@
-"""Мінімальна діагностика виклику Anthropic API — окремо від бота.
+"""Мінімальна діагностика виклику ШІ (Anthropic або OpenAI) — окремо від бота.
 
-Робить ОДИН найпростіший запит тим самим ключем із .env і друкує або сиру
-відповідь, або ПОВНУ помилку (тип, repr, причину-обгортку, трасування). Так
-видно чисту причину — SSLError / ConnectTimeout / ConnectionError / ProxyError
-тощо — без шуму бота.
+Провайдера бере з LLM_PROVIDER у .env. Робить ОДИН найпростіший запит тим самим
+ключем і друкує або сиру відповідь, або ПОВНУ помилку (тип, repr, причину-
+обгортку, трасування, а для HTTP-помилок — статус і ТІЛО відповіді API). Так
+видно чисту причину — SSLError / таймаут / 401 / вичерпаний баланс — без шуму
+бота.
 
 Ключ НЕ друкується (лише факт наявності й довжина, для перевірки, що він не
 порожній і не обрізаний).
@@ -25,9 +26,9 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from app.llm.provider import (  # noqa: E402 — після правки sys.path
-    ANTHROPIC_URL,
-    ANTHROPIC_VERSION,
     _default_http_post,
+    anthropic_request,
+    openai_request,
 )
 from app.settings import SettingsError, load_settings  # noqa: E402
 
@@ -41,33 +42,26 @@ def main() -> int:
 
     if not settings.llm_enabled:
         print("⚠️ ШІ вимкнено в налаштуваннях — викликати нема чого.")
-        print(f"   LLM_PROVIDER = {settings.llm_provider!r} (потрібно 'anthropic')")
+        print(f"   LLM_PROVIDER = {settings.llm_provider!r} (потрібно 'anthropic' або 'openai')")
         print(f"   LLM_API_KEY заданий: {bool(settings.llm_api_key)}")
-        print("   Впишіть у .env: LLM_PROVIDER=anthropic і LLM_API_KEY=<ключ>.")
+        print("   Впишіть у .env: LLM_PROVIDER=<anthropic|openai> і LLM_API_KEY=<ключ>.")
         return 2
 
     key = settings.llm_api_key
+    build_request = openai_request if settings.llm_provider == "openai" else anthropic_request
+    url, headers, body = build_request(key, settings.llm_model, "ти діагностика", "ping", 16)
+
     print("── Налаштування ─────────────────────────────")
+    print(f"  Провайдер: {settings.llm_provider}")
     print(f"  Модель:    {settings.llm_model}")
-    print(f"  Ендпойнт:  {ANTHROPIC_URL}")
+    print(f"  Ендпойнт:  {url}")
     print(f"  Таймаут:   {settings.llm_timeout_seconds} с")
     print(f"  Ключ:      заданий, довжина {len(key)} (сам ключ не друкуємо)")
     print("─────────────────────────────────────────────\n")
 
-    headers = {
-        "x-api-key": key,
-        "anthropic-version": ANTHROPIC_VERSION,
-        "content-type": "application/json",
-    }
-    body = {
-        "model": settings.llm_model,
-        "max_tokens": 16,
-        "messages": [{"role": "user", "content": "ping"}],
-    }
-
-    print("Роблю один запит до Anthropic API...\n")
+    print(f"Роблю один запит до {settings.llm_provider} API...\n")
     try:
-        data = _default_http_post(ANTHROPIC_URL, headers, body, settings.llm_timeout_seconds)
+        data = _default_http_post(url, headers, body, settings.llm_timeout_seconds)
     except Exception as exc:
         print("❌ ПОМИЛКА виклику:")
         print(f"   тип:    {type(exc).__name__}")
@@ -85,18 +79,18 @@ def main() -> int:
             except Exception as read_exc:
                 print(f"   (не вдалося прочитати тіло: {read_exc!r})")
             print(
-                "\n   ⇒ Це НЕ локальна мережа: запит дійшов до Anthropic. Дивіться "
-                "статус/тіло:\n"
+                "\n   ⇒ Це НЕ локальна мережа: запит дійшов до API. Дивіться статус/тіло:\n"
                 "     401/403 → ключ недійсний або немає доступу;\n"
                 "     404 → невідома модель (перевірте LLM_MODEL);\n"
-                "     400 → проблема з форматом запиту; 429 → ліміт."
+                "     400 → проблема з форматом запиту;\n"
+                "     429 → ліміт запитів або вичерпаний баланс (insufficient_quota)."
             )
         else:
             print(
                 "\n   ⇒ Схоже на ЛОКАЛЬНУ мережу. Причини:\n"
                 "     SSLError → сертифікати/антивірус/проксі;\n"
-                "     ConnectTimeout/ConnectionError → фаєрвол/проксі/немає доступу\n"
-                "       до api.anthropic.com; ProxyError → блокує системний проксі."
+                "     ConnectTimeout/ConnectionError → фаєрвол/проксі/немає доступу до\n"
+                "       api.anthropic.com чи api.openai.com; ProxyError → системний проксі."
             )
 
         print("\n── повне трасування ─────────────────────────")

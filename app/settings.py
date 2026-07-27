@@ -52,12 +52,12 @@ class Settings:
 
     @property
     def llm_enabled(self) -> bool:
-        """Чи ШІ реально ввімкнено: обрано провайдера anthropic І є ключ.
+        """Чи ШІ реально ввімкнено: обрано провайдера (anthropic|openai) І є ключ.
 
         Немає ключа — ШІ вимкнено (тихий фолбек на словниковий розбір), навіть
         якщо провайдера вказали. Це навмисно: бот має працювати ще до того, як
         власниця впише ключ."""
-        return self.llm_provider == "anthropic" and bool(self.llm_api_key)
+        return self.llm_provider in ("anthropic", "openai") and bool(self.llm_api_key)
 
     def is_allowed(self, user_id: int) -> bool:
         """Чи можна цьому Telegram ID користуватися ботом.
@@ -115,6 +115,19 @@ def _parse_int(raw: str, name: str, default: int, minimum: int = 1) -> int:
     return value
 
 
+# Дешеві моделі за замовчуванням для кожного провайдера. Явна LLM_MODEL у .env
+# перемагає ці значення — тут лише розумний дефолт, коли модель не вказали.
+_DEFAULT_MODELS = {
+    "anthropic": "claude-haiku-4-5-20251001",
+    "openai": "gpt-4o-mini",
+}
+
+
+def _default_llm_model(provider: str) -> str:
+    """Модель за замовчуванням для провайдера (коли LLM_MODEL порожній)."""
+    return _DEFAULT_MODELS.get(provider, _DEFAULT_MODELS["anthropic"])
+
+
 def load_settings(env_file: str | Path | None = None, *, require_token: bool = True) -> Settings:
     """Читає .env і збирає з нього об'єкт Settings.
 
@@ -170,6 +183,11 @@ def load_settings(env_file: str | Path | None = None, *, require_token: bool = T
 
     ttl_minutes = _parse_int(os.getenv("CACHE_TTL_MINUTES", ""), "CACHE_TTL_MINUTES", 30)
 
+    # Дефолт моделі залежить від провайдера: якщо LLM_MODEL порожній, беремо
+    # дешеву модель відповідного провайдера. Явно вказана LLM_MODEL — перемагає.
+    llm_provider = os.getenv("LLM_PROVIDER", "none").strip().lower() or "none"
+    llm_model = os.getenv("LLM_MODEL", "").strip() or _default_llm_model(llm_provider)
+
     return Settings(
         bot_token=bot_token,
         data_backend=data_backend,
@@ -177,7 +195,7 @@ def load_settings(env_file: str | Path | None = None, *, require_token: bool = T
         credentials_file=credentials_file,
         allowed_user_ids=allowed,
         admin_user_ids=admins,
-        llm_provider=os.getenv("LLM_PROVIDER", "none").strip().lower() or "none",
+        llm_provider=llm_provider,
         cache_ttl_seconds=ttl_minutes * 60,
         rate_limit_requests=_parse_int(
             os.getenv("RATE_LIMIT_REQUESTS", ""), "RATE_LIMIT_REQUESTS", 20
@@ -187,7 +205,7 @@ def load_settings(env_file: str | Path | None = None, *, require_token: bool = T
         ),
         log_level=(os.getenv("LOG_LEVEL", "INFO").strip().upper() or "INFO"),
         llm_api_key=os.getenv("LLM_API_KEY", "").strip(),
-        llm_model=(os.getenv("LLM_MODEL", "").strip() or "claude-haiku-4-5-20251001"),
+        llm_model=llm_model,
         llm_timeout_seconds=_parse_int(
             os.getenv("LLM_TIMEOUT_SECONDS", ""), "LLM_TIMEOUT_SECONDS", 20
         ),

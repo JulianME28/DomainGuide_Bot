@@ -15,7 +15,7 @@ import pytest
 from app.analytics.query import DonorQuery
 from app.dictionary.countries import country_by_code
 from app.llm.interpreter import LLMInterpreter, interpret_json
-from app.llm.provider import AnthropicProvider, LLMError
+from app.llm.provider import AnthropicProvider, LLMError, OpenAIProvider
 from app.llm.service import build_ai_service
 from app.settings import Settings
 
@@ -23,6 +23,11 @@ from app.settings import Settings
 def anthropic_response(text: str) -> dict:
     """Відповідь Messages API у мінімальному вигляді."""
     return {"content": [{"type": "text", "text": text}]}
+
+
+def openai_response(text: str) -> dict:
+    """Відповідь OpenAI Chat Completions у мінімальному вигляді."""
+    return {"choices": [{"message": {"role": "assistant", "content": text}}]}
 
 
 def fake_post(response: dict | None = None, *, raises: Exception | None = None):
@@ -207,3 +212,101 @@ class TestСервіс:
         assert isinstance(query, DonorQuery)
         assert query.is_multi_country
         assert query.traffic_min == 100
+
+
+class TestOpenAIПровайдер:
+    """OpenAI Chat Completions — той самий контракт, що й Anthropic."""
+
+    async def test_повертає_текст_і_правильний_запит(self):
+        post = fake_post(openai_response('{"country":"de"}'))
+        provider = OpenAIProvider("sk-proj-secret", "gpt-4o-mini", 20, http_post=post)
+
+        out = await provider.complete("system", "user text")
+
+        assert out == '{"country":"de"}'
+        call = post.calls[0]
+        assert call["url"].endswith("/chat/completions")
+        assert call["headers"]["Authorization"] == "Bearer sk-proj-secret"
+        assert call["body"]["model"] == "gpt-4o-mini"
+        roles = [m["role"] for m in call["body"]["messages"]]
+        assert roles == ["system", "user"]
+
+    async def test_відповідь_без_тексту_це_помилка(self):
+        provider = OpenAIProvider("k", "m", 1, http_post=fake_post({"choices": []}))
+        with pytest.raises(LLMError):
+            await provider.complete("s", "u")
+
+    async def test_помилка_http_стає_LLMError(self):
+        provider = OpenAIProvider("k", "m", 1, http_post=fake_post(raises=OSError("down")))
+        with pytest.raises(LLMError):
+            await provider.complete("s", "u")
+
+    def test_ключ_не_в_repr(self):
+        assert "sk-proj-secret" not in repr(OpenAIProvider("sk-proj-secret", "m", 1))
+
+    async def test_ключ_не_в_тексті_винятку(self):
+        provider = OpenAIProvider(
+            "sk-proj-secret", "m", 1, http_post=fake_post(raises=OSError("boom"))
+        )
+        try:
+            await provider.complete("s", "u")
+        except LLMError as exc:
+            assert "sk-proj-secret" not in str(exc)
+
+
+class TestOpenAIСервіс:
+    """Вибір провайдера через .env і той самий фолбек/ліміт/логування."""
+
+    def test_build_обирає_openai_провайдера(self):
+        service = build_ai_service(
+            ai_settings(llm_provider="openai", llm_model="gpt-4o-mini"),
+            http_post=fake_post(openai_response("{}")),
+        )
+        assert service is not None
+        assert isinstance(service._interpreter._provider, OpenAIProvider)
+
+    def test_build_обирає_anthropic_за_замовчуванням(self):
+        service = build_ai_service(ai_settings(), http_post=fake_post(anthropic_response("{}")))
+        assert isinstance(service._interpreter._provider, AnthropicProvider)
+
+    async def test_валідний_фільтр_через_openai(self):
+        post = fake_post(openai_response('{"countries":["de","fr"],"traffic_min":100}'))
+        service = build_ai_service(ai_settings(llm_provider="openai"), http_post=post)
+
+        query = await service.try_interpret(1, "німецькі й французькі з трафіком")
+
+        assert isinstance(query, DonorQuery)
+        assert query.is_multi_country
+        assert query.traffic_min == 100
+
+    async def test_сміття_від_openai_дає_None(self):
+        post = fake_post(openai_response("вибачте, не зрозумів"))
+        service = build_ai_service(ai_settings(llm_provider="openai"), http_post=post)
+        assert await service.try_interpret(1, "...") is None
+
+    async def test_401_openai_тихий_фолбек(self):
+        import urllib.error
+
+        err = urllib.error.HTTPError("u", 401, "Unauthorized", {}, None)  # type: ignore[arg-type]
+        service = build_ai_service(
+            ai_settings(llm_provider="openai"), http_post=fake_post(raises=err)
+        )
+        assert await service.try_interpret(1, "x") is None  # None, без краху
+
+    async def test_мережа_openai_тихий_фолбек(self):
+        service = build_ai_service(
+            ai_settings(llm_provider="openai"), http_post=fake_post(raises=OSError("network down"))
+        )
+        assert await service.try_interpret(1, "x") is None
+
+    async def test_ключ_openai_не_тече_в_лог(self, caplog):
+        import logging
+        import urllib.error
+
+        service = build_ai_service(
+            ai_settings(llm_provider="openai", llm_api_key="sk-proj-super-secret"),
+            http_post=fake_post(raises=urllib.error.URLError(OSError("boom"))),
+        )
+        with caplog.at_level(logging.ERROR):
+            await service.try_interpret(1, "x")
+        assert "sk-proj-super-secret" not in caplog.text
