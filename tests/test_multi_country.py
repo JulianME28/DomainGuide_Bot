@@ -68,6 +68,35 @@ class TestПарсингСписку:
         assert parsed.query.is_multi_country
         assert "ельдорадо" in parsed.unrecognized
 
+    def test_список_кодів_вісім_країн(self):
+        """Реальний баг: список із самих 2-літерних кодів — усі 8 країн."""
+        parsed = parse_free_text("Морди по 8 країнах: UK, FR, DE, IT, ES, NL, BE, IE")
+        assert parsed.query.is_multi_country
+        assert {c.code for c in parsed.query.countries} == {
+            "gb",
+            "fr",
+            "de",
+            "it",
+            "es",
+            "nl",
+            "be",
+            "ie",
+        }
+        assert parsed.unrecognized == ()  # нічого не втрачено й не зайве
+        assert parsed.query.section_key == "mordy"
+
+    def test_код_нікому_не_належить_іде_в_не_впізнав(self):
+        """2-літерний елемент, що не є країною, не зникає — він у «не впізнав»."""
+        parsed = parse_free_text("UK, FR, XX, DE")
+        assert {c.code for c in parsed.query.countries} == {"gb", "fr", "de"}
+        assert "xx" in parsed.unrecognized
+
+    def test_багато_країн_не_обрізаються(self):
+        """Список нижче за максимум (30) не має тихо втрачати країн."""
+        codes = "de, fr, it, es, nl, be, ie, pl, pt, se, at, ch, dk, no, fi"  # 15
+        parsed = parse_free_text(codes)
+        assert len(parsed.query.countries) == 15
+
     def test_разом_не_потрапляє_в_нерозпізнані(self):
         """«разом» — склеювач-підсумок, а не країна."""
         parsed = parse_free_text("Морди по США, Канаді та Австралії разом")
