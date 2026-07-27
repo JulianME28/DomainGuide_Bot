@@ -298,6 +298,14 @@ async def receive_free_text(message: Message, services: BotServices, state: FSMC
             await show_result(message, services, ai_query, message.from_user.id)
             return
 
+        if parsed.unrecognized:
+            from app.text.cards import render_not_understood
+
+            await message.answer(
+                render_not_understood(parsed.unrecognized), reply_markup=cancel_only()
+            )
+            return
+
         from app.text.freeform import CLARIFICATION_TEXT
 
         await message.answer(CLARIFICATION_TEXT, reply_markup=cancel_only())
@@ -306,12 +314,20 @@ async def receive_free_text(message: Message, services: BotServices, state: FSMC
     await state.set_state(None)
     await state.update_data(**query_to_state(parsed.query, parsed.mentioned))
 
-    # Порожній запит без бази — не вивалюємо всю базу, а підказуємо, що вказати.
-    if not parsed.section_named and not parsed.query.is_multi_country and parsed.query.is_empty:
-        from app.text.freeform import EMPTY_QUERY_HINT
+    # Порожній запит без валідного фільтра — базу НЕ вивалюємо.
+    if not parsed.query.is_multi_country and parsed.query.is_empty:
+        if parsed.unrecognized:
+            from app.text.cards import render_not_understood
 
-        await message.answer(EMPTY_QUERY_HINT, reply_markup=cancel_only())
-        return
+            await message.answer(
+                render_not_understood(parsed.unrecognized), reply_markup=cancel_only()
+            )
+            return
+        if not parsed.section_named:
+            from app.text.freeform import EMPTY_QUERY_HINT
+
+            await message.answer(EMPTY_QUERY_HINT, reply_markup=cancel_only())
+            return
 
     # Зведено по обох базах, коли базу не назвали явно АБО назвали переліком
     # («(Меджик + Морди)», «в обох базах»). Список країн має власний вигляд.

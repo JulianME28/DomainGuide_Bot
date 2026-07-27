@@ -389,3 +389,59 @@ class TestПерелікБазІПідсумок:
         assert text.count("Знайдено донорів") == 1
         assert "res:filter" in _codes(markup)
         assert "по двох базах" not in text
+
+
+class TestНеЗрозумівЗапит:
+    """Значущі, але нерозпізнані слова НЕ відкидаються тихо й не вивалюють базу."""
+
+    async def _run(self, services, text):
+        from app.bot.handlers.freeform import handle_free_text
+
+        message = FakeMessage(text=text)
+        await handle_free_text(message, services, FakeState({}))
+        return message
+
+    async def test_одрук_мови_дає_нуль_і_не_зрозумів(self, both_services):
+        """«англьійською» → 0 + «не зрозумів по: англьійською», НЕ вся база."""
+        message = await self._run(both_services, "Скільки донорів Меджик з англьійською мовою?")
+        answer = message.answers[-1][0]
+        assert "Знайдено донорів:</b> 0" in answer
+        assert "англьійською" in answer
+        assert all(sent.edits == [] for sent in message.sents)  # базу не порахували
+
+    async def test_неіснуюча_країна_дає_нуль_і_не_зрозумів(self, both_services):
+        """«Атлантида» → 0 + «не зрозумів по: Атлантида», НЕ вся база."""
+        message = await self._run(both_services, "Скільки донорів Меджик по Атлантиді?")
+        answer = message.answers[-1][0]
+        assert "Знайдено донорів:</b> 0" in answer
+        assert "атлантид" in answer.lower()
+        assert all(sent.edits == [] for sent in message.sents)
+
+    async def test_частковий_запит_виконується_з_попередженням(self, both_services):
+        """Німеччина розпізнана → картка по ній, але з рядком про відкинуте."""
+        message = await self._run(both_services, "Меджик Німеччина англьійською")
+        text, _markup = _shown(message)
+        assert "Німеччина" in text
+        assert "Не зрозумів запит по" in text and "англьійською" in text
+
+    async def test_чистий_донори_це_підказка_а_не_не_зрозумів(self, both_services):
+        """Порожній «донори» → уточнення, а не «0 + не зрозумів»."""
+        message = await self._run(both_services, "донори")
+        answer = message.answers[-1][0]
+        assert "Не зрозумів запит по" not in answer
+        assert all(sent.edits == [] for sent in message.sents)
+
+    async def test_службові_слова_не_в_не_зрозумів(self, both_services):
+        """«по/та/разом» не потрапляють у перелік нерозпізнаного."""
+        message = await self._run(both_services, "Меджик по та разом Атлантида")
+        answer = message.answers[-1][0]
+        assert "атлантида" in answer.lower()
+        for junk in ("«по»", "«та»", "«разом»"):
+            assert junk not in answer
+
+    async def test_валідний_запит_без_зайвих_попереджень(self, both_services):
+        """Повністю зрозумілий запит працює як раніше, без «не зрозумів»."""
+        message = await self._run(both_services, "Меджик Британія трафік від 50")
+        text, _markup = _shown(message)
+        assert "Знайдено донорів" in text
+        assert "Не зрозумів запит по" not in text

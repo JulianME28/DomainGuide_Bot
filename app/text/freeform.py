@@ -287,10 +287,16 @@ _STRUCTURAL_STOPWORDS = frozenset(
         # Дрібні службові слова (2 літери) — щоб не потрапляли в «не впізнав»,
         # коли поріг довжини знижено до 2 задля впізнання нерозпізнаних кодів.
         "як", "це", "чи", "то", "бо", "же", "би", "ну", "де", "за", "із", "из", "от", "со",
+        # Слова-пороги й одиниці метрик: це НЕ назви — щоб «трафік від 50» не
+        # лишав «від» у «не зрозумів». Самі назви вимірів прибирає _DIMENSION_STEMS.
+        "від", "до", "більше", "менше", "більш", "менш", "понад", "ніж", "не",
+        "мінімум", "максимум", "штук", "штуки", "лінк", "лінки", "лінків",
     }
 )  # fmt: skip
 _ALL_SECTION_WORDS = frozenset(word for words in _SECTION_WORDS.values() for word in words)
-_DIMENSION_STEMS = tuple(stem for spec in SPECS for stem in spec.stems)
+# Кожен вимір — набором ОКРЕМИХ слів (багатослівні стеми «рейтинг домену»,
+# «вихідних лінк» розбиваємо), щоб їх частини не лишалися в «не зрозумів».
+_DIMENSION_STEMS = tuple(word for spec in SPECS for stem in spec.stems for word in stem.split())
 
 
 def _unrecognized_names(leftover: str) -> tuple[str, ...]:
@@ -447,41 +453,49 @@ def parse_free_text(text: str, *, default_section: str = "magic") -> ParsedQuery
         dimension for dimension, match in matches.items() if match.cancelled and dimension in active
     }
 
+    # Нерозпізнані слова-претензії на параметр (країна/мова/зона): беремо із
+    # залишку, де вже затерто впізнані країни й мови. Так «Атлантида» чи одрук
+    # «англьійською» не зникнуть тихо — вони підуть у рядок «не зрозумів».
+    countries_all, leftover = find_all_countries(remaining)
+    unrecognized = _unrecognized_names(leftover)
+
     # СПИСОК країн (≥2 в одному запиті) — окремий шлях: розклад по країнах і
     # унікальний підсумок. Метричні фільтри застосовуються до всіх країн.
     # Якщо явно попросили зону — це не список країн, а запит по зоні.
-    if not cancelled_dimension(Dimension.COUNTRY) and not explicit_zones:
-        countries_all, leftover = find_all_countries(remaining)
-        if len(countries_all) >= 2:
-            unrecognized = _unrecognized_names(leftover)
-            multi_query = DonorQuery(
-                section_key=section,
-                countries=tuple(countries_all),
-                geo=geo,
-                unrecognized=unrecognized,
-                countries_note=countries_note,
-                dr_min=dr_min,
-                dr_max=dr_max,
-                traffic_min=traffic_min,
-                traffic_max=traffic_max,
-                outlinks_min=outlinks_min,
-                outlinks_max=outlinks_max,
-                spam_min=spam_min,
-                spam_max=spam_max,
-            )
-            multi_mentioned = {Dimension.COUNTRY} | metric_mentions
-            if geo_country is not None or geo_cancelled:
-                multi_mentioned.add(Dimension.GEO)
-            return ParsedQuery(
-                query=multi_query,
-                understood=True,
-                section_named=section_named,
-                mentioned=frozenset(multi_mentioned),
-                cancelled=frozenset(cancelled | ({Dimension.GEO} if geo_cancelled else set())),
-                unrecognized=unrecognized,
-                both_bases=both_bases,
-                want_total=want_total,
-            )
+    is_country_list = (
+        not cancelled_dimension(Dimension.COUNTRY)
+        and not explicit_zones
+        and len(countries_all) >= 2
+    )
+    if is_country_list:
+        multi_query = DonorQuery(
+            section_key=section,
+            countries=tuple(countries_all),
+            geo=geo,
+            unrecognized=unrecognized,
+            countries_note=countries_note,
+            dr_min=dr_min,
+            dr_max=dr_max,
+            traffic_min=traffic_min,
+            traffic_max=traffic_max,
+            outlinks_min=outlinks_min,
+            outlinks_max=outlinks_max,
+            spam_min=spam_min,
+            spam_max=spam_max,
+        )
+        multi_mentioned = {Dimension.COUNTRY} | metric_mentions
+        if geo_country is not None or geo_cancelled:
+            multi_mentioned.add(Dimension.GEO)
+        return ParsedQuery(
+            query=multi_query,
+            understood=True,
+            section_named=section_named,
+            mentioned=frozenset(multi_mentioned),
+            cancelled=frozenset(cancelled | ({Dimension.GEO} if geo_cancelled else set())),
+            unrecognized=unrecognized,
+            both_bases=both_bases,
+            want_total=want_total,
+        )
 
     query = DonorQuery(
         section_key=section,
@@ -498,6 +512,7 @@ def parse_free_text(text: str, *, default_section: str = "magic") -> ParsedQuery
             else entities.global_zones
         ),
         request_hint=request_hint,
+        unrecognized=unrecognized,
         dr_min=dr_min,
         dr_max=dr_max,
         traffic_min=traffic_min,
@@ -535,6 +550,7 @@ def parse_free_text(text: str, *, default_section: str = "magic") -> ParsedQuery
         section_named=section_named,
         mentioned=frozenset(mentioned),
         cancelled=frozenset(cancelled),
+        unrecognized=unrecognized,
         request_marker=request_marker,
         both_bases=both_bases,
         want_total=want_total,

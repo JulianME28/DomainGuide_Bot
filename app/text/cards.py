@@ -201,6 +201,38 @@ def _error_note(core: Aggregate) -> str:
     )
 
 
+def _unrecognized_note(tokens: tuple[str, ...]) -> str | None:
+    """Рядок «не зрозумів» зі словами вхідного запиту, які не читаються як фільтр.
+
+    Це запобіжник проти тихого відкидання: якщо бот не зчитав претензію на
+    країну/мову/зону, він каже про це прямо, а не вдає, що її не було."""
+    if not tokens:
+        return None
+    listed = ", ".join(f"«{escape(token)}»" for token in tokens)
+    return f"⚠️ <b>Не зрозумів запит по:</b> {listed}"
+
+
+EMPTY_HINT_LINE = (
+    "💡 <i>Приклад: <code>Меджик, Британія, трафік від 1</code>. "
+    "Або через меню — /start, чи майстром — /query.</i>"
+)
+
+
+def render_not_understood(tokens: tuple[str, ...]) -> str:
+    """Картка, коли в запиті БУЛИ слова-параметри, але жодного не розпізнано.
+
+    Показуємо чесний нуль і перелік нерозпізнаних фрагментів — НЕ всю базу,
+    щоб не створювати фальшиве «правдиве» число (ТЗ, розділ безпеки)."""
+    return "\n".join(
+        [
+            "✅ <b>Знайдено донорів:</b> 0",
+            _unrecognized_note(tokens) or "⚠️ <b>Не зрозумів запит.</b>",
+            "",
+            EMPTY_HINT_LINE,
+        ]
+    )
+
+
 def render_result(
     result: QueryResult,
     *,
@@ -235,6 +267,13 @@ def render_result(
 
     lines.append("")
     lines.append(f"✅ <b>Знайдено донорів:</b> {_found_count(result)}")
+
+    # Частину запиту не зрозуміли — кажемо прямо, які саме слова відкинуто.
+    # Запит усе одно виконано по тому, що розпізнали, але факт не ховаємо.
+    unrecognized_note = _unrecognized_note(result.query.unrecognized)
+    if unrecognized_note:
+        lines.append("")
+        lines.append(unrecognized_note)
 
     # Одразу під числом — попередження, що частина фільтрів не застосувалась
     # (база не має таких колонок). Інакше число оманливе.
@@ -505,6 +544,12 @@ def render_both_bases(query, blocks: list[str], *, total=None, explicit_both: bo
         f"🔎 <b>Запит:</b> {escape(query.describe())}",
         base_note,
     ]
+
+    # Частину запиту не зрозуміли — кажемо про це в шапці, один раз на обидві
+    # бази (це стосується розбору запиту, а не конкретної бази).
+    unrecognized_note = _unrecognized_note(query.unrecognized)
+    if unrecognized_note:
+        header.append(unrecognized_note)
 
     # Підсумок — одразу під рядком про бази (вгорі), а не в кінці повідомлення.
     if total is not None:

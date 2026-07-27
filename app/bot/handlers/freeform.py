@@ -19,6 +19,7 @@ from app.bot.context import BotServices
 from app.bot.execution import resolve_with_ai, show_both_bases, show_result
 from app.bot.keyboards import back_to_menu, cancel_only
 from app.bot.states import Ask, query_to_state
+from app.text.cards import render_not_understood
 from app.text.freeform import CLARIFICATION_TEXT, EMPTY_QUERY_HINT, parse_free_text
 
 router = Router(name="freeform")
@@ -49,6 +50,13 @@ async def handle_free_text(message: Message, services: BotServices, state: FSMCo
             await state.update_data(**query_to_state(ai_query))
             await show_result(message, services, ai_query, message.from_user.id)
             return
+        # ШІ не допоміг. Якщо у запиті БУЛИ слова-претензії на параметр — кажемо
+        # прямо, чого не зрозуміли, а не глухе «не розпізнав».
+        if parsed.unrecognized:
+            await message.answer(
+                render_not_understood(parsed.unrecognized), reply_markup=back_to_menu()
+            )
+            return
         await message.answer(CLARIFICATION_TEXT, reply_markup=back_to_menu())
         return
 
@@ -56,12 +64,20 @@ async def handle_free_text(message: Message, services: BotServices, state: FSMCo
     # рівно те, про що сказали в цьому повідомленні.
     await state.update_data(**query_to_state(parsed.query, parsed.mentioned))
 
-    # Порожній запит без бази (лише «донори», «разом», «по обох базах» тощо) —
-    # не вивалюємо всю базу, а підказуємо, що вказати. Якщо названо базу або є
-    # хоч один фільтр — виконуємо як звичайно.
-    if not parsed.section_named and not parsed.query.is_multi_country and parsed.query.is_empty:
-        await message.answer(EMPTY_QUERY_HINT, reply_markup=back_to_menu())
-        return
+    # Порожній запит без валідного фільтра — базу НЕ вивалюємо.
+    if not parsed.query.is_multi_country and parsed.query.is_empty:
+        # Були слова-претензії, але жодну не розпізнали → чесний 0 + «не зрозумів»
+        # (навіть коли названо базу — фальшиве «правдиве» число небезпечніше).
+        if parsed.unrecognized:
+            await message.answer(
+                render_not_understood(parsed.unrecognized), reply_markup=back_to_menu()
+            )
+            return
+        # Справді без параметрів і без бази → підказка-уточнення. Названу базу
+        # без фільтра лишаємо як є (агрегат по всій базі — це свідомий вибір).
+        if not parsed.section_named:
+            await message.answer(EMPTY_QUERY_HINT, reply_markup=back_to_menu())
+            return
 
     # Зведення по обох базах, коли базу не назвали ЯВНО, або коли її назвали
     # переліком («(Меджик + Морди)», «в обох базах»). Список країн має власний

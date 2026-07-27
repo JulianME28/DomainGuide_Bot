@@ -679,13 +679,15 @@ class TestШІФолбек:
 
     async def test_незрозумілий_без_ші_дає_підказку(self, repository, columns_config):
         from app.bot.handlers.freeform import handle_free_text
-        from app.text.freeform import CLARIFICATION_TEXT
 
         services = self._services(repository, columns_config, None)  # ШІ вимкнено
         message = FakeMessage(text="qweasd zxcvbn")
         await handle_free_text(message, services, FakeState({}))
 
-        assert any(answer[0] == CLARIFICATION_TEXT for answer in message.answers)
+        # Незрозумілі слова названо прямо — не глухе мовчання й не вся база.
+        answer = message.answers[-1][0]
+        assert "Не зрозумів запит по" in answer
+        assert "qweasd" in answer and "zxcvbn" in answer
 
     async def test_незрозумілий_з_ші_виконує_запит(self, repository, columns_config):
         from app.bot.handlers.freeform import handle_free_text
