@@ -99,6 +99,22 @@ class TestАдаптер:
         except LLMError as exc:
             assert "super-secret-key" not in str(exc)
 
+    async def test_мережева_помилка_логує_повну_причину(self, caplog):
+        """У лог (ERROR) іде справжня причина-обгортка, але НЕ ключ."""
+        import logging
+        import urllib.error
+
+        cause = OSError("[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed")
+        provider = AnthropicProvider(
+            "super-secret-key", "m", 1, http_post=fake_post(raises=urllib.error.URLError(cause))
+        )
+        with caplog.at_level(logging.ERROR), pytest.raises(LLMError):
+            await provider.complete("s", "u")
+
+        assert "URLError" in caplog.text
+        assert "CERTIFICATE_VERIFY_FAILED" in caplog.text  # справжню причину видно
+        assert "super-secret-key" not in caplog.text  # ключ не витік у лог
+
 
 class TestВалідаціяФільтра:
     def test_валідний_фільтр(self):

@@ -16,9 +16,33 @@ import urllib.error
 import urllib.request
 from collections.abc import Callable
 
+from app.logging_setup import get_logger
+
+logger = get_logger(__name__)
+
 # Офіційний ендпойнт і версія Messages API (стабільні значення заголовків).
 ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
 ANTHROPIC_VERSION = "2023-06-01"
+
+
+def _log_network_error(exc: BaseException) -> None:
+    """Пише в лог ПОВНУ причину мережевої помилки виклику ШІ. Рівень ERROR.
+
+    Ключа тут немає: він лише в заголовках ЗАПИТУ, а вони у виняток не
+    потрапляють. Друкуємо тип, repr і причину-обгортку, щоб було видно
+    справжнє коріння — SSLError / ConnectTimeout / ConnectionError / ProxyError:
+      * urllib кладе причину в `.reason` (напр. URLError(SSLError(...)));
+      * httpx та інші обгортки — у `__cause__`.
+    Трасування додаємо через exc_info, щоб було видно й ланцюг обгорток."""
+    logger.error(
+        "Помилка виклику ШІ (мережа): тип=%s | repr=%r | reason=%r | cause=%r",
+        type(exc).__name__,
+        exc,
+        getattr(exc, "reason", None),
+        exc.__cause__,
+        exc_info=exc,
+    )
+
 
 # Тип функції-транспорту: (url, headers, body) -> розібраний JSON-відповіді.
 HttpPost = Callable[[str, dict[str, str], dict, float], dict]
@@ -83,9 +107,12 @@ class AnthropicProvider:
                 self._http_post, ANTHROPIC_URL, headers, body, self._timeout
             )
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
-            # Навмисно НЕ включаємо подробиці, які могли б містити заголовки/ключ.
+            # Деталі йдуть у ЛОГ (з причиною-обгорткою), а не в текст винятку —
+            # LLMError лишається без подробиць, щоб напевно не витік ключ/заголовки.
+            _log_network_error(exc)
             raise LLMError(f"мережева помилка виклику ШІ: {type(exc).__name__}") from None
-        except Exception as exc:  # будь-що інше — теж без деталей
+        except Exception as exc:  # будь-що інше — теж деталі в лог, не в текст
+            _log_network_error(exc)
             raise LLMError(f"помилка виклику ШІ: {type(exc).__name__}") from None
 
         return _extract_text(data)
