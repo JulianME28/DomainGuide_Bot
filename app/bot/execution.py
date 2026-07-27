@@ -166,7 +166,9 @@ async def show_both_bases(
     services.action_log.add(user_id, f"обидві бази: {query.describe()}")
     await status.edit_text(
         render_both_bases(query, blocks, explicit_both=explicit_both),
-        reply_markup=both_bases_menu(bases),
+        reply_markup=both_bases_menu(
+            bases, ai_retry=bool(query.unrecognized) and services.ai is not None
+        ),
     )
 
 
@@ -216,6 +218,8 @@ async def show_result(
             has_recommendations=not executed.recommendations.is_empty,
             has_country=query.country is not None,
             run_in=executed.alt_base,
+            # Частину запиту не зрозуміли й ШІ ввімкнено → даємо «уточнити через ШІ».
+            ai_retry=bool(query.unrecognized) and services.ai is not None,
         ),
     )
     return executed

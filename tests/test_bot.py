@@ -89,11 +89,17 @@ class FakeCallback:
         self.message = message if message is not None else FakeMessage(user_id=user_id)
         self.from_user = FakeUser(user_id)
         self.answers: list[tuple] = []
+        self.sents: list[FakeSent] = []
 
     async def answer(self, text=None, show_alert: bool = False, reply_markup=None):
         # reply_markup приймаємо, бо wizard-хелпери можуть показувати крок
         # через цей самий об'єкт (у бою це робить окремий шлях для Message).
+        # Повертаємо «надіслане»: show_result бачить не справжній CallbackQuery,
+        # тож працює з цим об'єктом як із повідомленням (isinstance не спрацює).
         self.answers.append((text, reply_markup if reply_markup is not None else show_alert))
+        sent = FakeSent()
+        self.sents.append(sent)
+        return sent
 
 
 class FakeState:
@@ -757,7 +763,9 @@ class TestІндивідуальнийЗапит:
         message = FakeMessage(text="абракадабра")
         await receive_ai_query(message, services, FakeState({}))
 
-        shown = [e[0] for sent in message.sents for e in sent.edits] + [a[0] for a in message.answers]
+        shown = [e[0] for sent in message.sents for e in sent.edits] + [
+            a[0] for a in message.answers
+        ]
         assert any("не зміг" in t for t in shown)
 
     async def test_ручний_виклик_рахується_лічильником(self, repository, columns_config):
@@ -773,3 +781,68 @@ class TestІндивідуальнийЗапит:
         assert service.calls_today == 0
         await receive_ai_query(FakeMessage(text="німецькі донори"), services, FakeState({}))
         assert service.calls_today == 1  # ручний виклик враховано
+
+
+class TestУточнитиЧерезШІ:
+    """Кнопка «🧠 Уточнити через ШІ» під карткою «не зрозумів»."""
+
+    def _services(self, repository, columns_config, ai):
+        return BotServices(
+            settings=make_settings(),
+            columns=columns_config,
+            repository=repository,
+            action_log=ActionLog(),
+            ai=ai,
+        )
+
+    async def test_кнопка_зʼявляється_на_не_зрозумів(self, repository, columns_config):
+        """«Меджик по Атлантиді» → картка «не зрозумів» із кнопкою ai:retry."""
+        from app.bot.handlers.freeform import handle_free_text
+
+        services = self._services(repository, columns_config, SpyAI(None))
+        message = FakeMessage(text="Меджик по Атлантиді")
+        await handle_free_text(message, services, FakeState({}))
+        text, markup = message.answers[-1]
+        assert "Не зрозумів запит по" in text
+        assert "ai:retry" in _callback_data(markup)
+
+    async def test_кнопки_немає_без_ші(self, repository, columns_config):
+        from app.bot.handlers.freeform import handle_free_text
+
+        services = self._services(repository, columns_config, None)  # ШІ вимкнено
+        message = FakeMessage(text="Меджик по Атлантиді")
+        await handle_free_text(message, services, FakeState({}))
+        _text, markup = message.answers[-1]
+        assert "ai:retry" not in _callback_data(markup)
+
+    async def test_кнопки_немає_на_зрозумілому_запиті(self, repository, columns_config):
+        """Повністю зрозумілий запит → у меню картки немає «уточнити через ШІ»."""
+        from app.bot.handlers.freeform import handle_free_text
+
+        services = self._services(repository, columns_config, SpyAI(None))
+        message = FakeMessage(text="Меджик Німеччина")
+        await handle_free_text(message, services, FakeState({}))
+        _text, markup = message.sents[-1].edits[-1]
+        assert "ai:retry" not in _callback_data(markup)
+
+    async def test_ретрай_кличе_ші_на_тому_самому_тексті(self, repository, columns_config):
+        from app.bot.handlers.ai import retry_via_ai
+
+        spy = SpyAI(DonorQuery(section_key="magic", country=country_by_code("de")))
+        services = self._services(repository, columns_config, spy)
+        state = FakeState({"last_text": "Меджик по Атлантиді"})
+        callback = FakeCallback("ai:retry")
+        await retry_via_ai(callback, services, state)
+
+        assert spy.calls == [(1, "Меджик по Атлантиді")]  # той самий текст
+        # show_result бачить не справжній CallbackQuery, тож картка — на callback.
+        card = callback.sents[-1].edits[-1][0]
+        assert "ШІ зрозумів як" in card
+
+    async def test_ретрай_без_збереженого_тексту(self, repository, columns_config):
+        from app.bot.handlers.ai import retry_via_ai
+
+        services = self._services(repository, columns_config, SpyAI(None))
+        callback = FakeCallback("ai:retry", message=FakeMessage())
+        await retry_via_ai(callback, services, FakeState({}))  # немає last_text
+        assert any("Немає запиту" in (a[0] or "") for a in callback.message.answers)

@@ -13,16 +13,21 @@ from __future__ import annotations
 from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
-from aiogram.types import Message
+from aiogram.types import InlineKeyboardMarkup, Message
 
 from app.bot.context import BotServices
 from app.bot.execution import resolve_with_ai, show_both_bases, show_result
-from app.bot.keyboards import back_to_menu, cancel_only
+from app.bot.keyboards import ai_retry_menu, back_to_menu, cancel_only
 from app.bot.states import Ask, query_to_state
 from app.text.cards import render_not_understood
 from app.text.freeform import CLARIFICATION_TEXT, EMPTY_QUERY_HINT, parse_free_text
 
 router = Router(name="freeform")
+
+
+def _not_understood_menu(services: BotServices) -> InlineKeyboardMarkup:
+    """Клавіатура під карткою «не зрозумів»: з кнопкою ШІ, лише коли ШІ ввімкнено."""
+    return ai_retry_menu() if services.ai is not None else back_to_menu()
 
 
 @router.message(Command("query"))
@@ -42,6 +47,9 @@ async def handle_free_text(message: Message, services: BotServices, state: FSMCo
     data = await state.get_data()
     text = message.text or ""
     parsed = parse_free_text(text, default_section=data.get("section_key", "magic"))
+    # Запам'ятовуємо текст запиту — щоб кнопка «Уточнити через ШІ» могла
+    # повторити РІВНО ТОЙ САМИЙ запит через ШІ.
+    await state.update_data(last_text=text)
 
     if parsed.needs_clarification:
         # Словник не зрозумів — пробуємо ШІ (якщо ввімкнено). Не вийшло — підказка.
@@ -54,7 +62,8 @@ async def handle_free_text(message: Message, services: BotServices, state: FSMCo
         # прямо, чого не зрозуміли, а не глухе «не розпізнав».
         if parsed.unrecognized:
             await message.answer(
-                render_not_understood(parsed.unrecognized), reply_markup=back_to_menu()
+                render_not_understood(parsed.unrecognized),
+                reply_markup=_not_understood_menu(services),
             )
             return
         await message.answer(CLARIFICATION_TEXT, reply_markup=back_to_menu())
@@ -70,7 +79,8 @@ async def handle_free_text(message: Message, services: BotServices, state: FSMCo
         # (навіть коли названо базу — фальшиве «правдиве» число небезпечніше).
         if parsed.unrecognized:
             await message.answer(
-                render_not_understood(parsed.unrecognized), reply_markup=back_to_menu()
+                render_not_understood(parsed.unrecognized),
+                reply_markup=_not_understood_menu(services),
             )
             return
         # Справді без параметрів і без бази → підказка-уточнення. Названу базу

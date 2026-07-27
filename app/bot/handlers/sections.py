@@ -21,6 +21,7 @@ from app.bot.execution import (
     show_result,
 )
 from app.bot.keyboards import (
+    ai_retry_menu,
     back_to_menu,
     cancel_only,
     country_picker,
@@ -42,6 +43,12 @@ from app.text.freeform import parse_free_text
 from app.text.prompts import cross_mode_prompt
 
 router = Router(name="sections")
+
+
+def _not_understood_menu(services: BotServices):
+    """Клавіатура під «не зрозумів»: з кнопкою ШІ, лише коли ШІ ввімкнено."""
+    return ai_retry_menu() if services.ai is not None else cancel_only()
+
 
 SUBMITS_TEXT = (
     "📩 <b>Сабміти</b>\n\n"
@@ -288,6 +295,8 @@ async def receive_free_text(message: Message, services: BotServices, state: FSMC
     data = await state.get_data()
     text = message.text or ""
     parsed = parse_free_text(text, default_section=data.get("section_key", "magic"))
+    # Запам'ятовуємо текст — для кнопки «Уточнити через ШІ» (той самий запит).
+    await state.update_data(last_text=text)
 
     if parsed.needs_clarification:
         # Словник не зрозумів — резервно пробуємо ШІ (якщо ввімкнено).
@@ -302,7 +311,8 @@ async def receive_free_text(message: Message, services: BotServices, state: FSMC
             from app.text.cards import render_not_understood
 
             await message.answer(
-                render_not_understood(parsed.unrecognized), reply_markup=cancel_only()
+                render_not_understood(parsed.unrecognized),
+                reply_markup=_not_understood_menu(services),
             )
             return
 
@@ -320,7 +330,8 @@ async def receive_free_text(message: Message, services: BotServices, state: FSMC
             from app.text.cards import render_not_understood
 
             await message.answer(
-                render_not_understood(parsed.unrecognized), reply_markup=cancel_only()
+                render_not_understood(parsed.unrecognized),
+                reply_markup=_not_understood_menu(services),
             )
             return
         if not parsed.section_named:

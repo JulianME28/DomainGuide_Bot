@@ -95,12 +95,22 @@ def country_picker(section_key: str) -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
+def ai_retry_menu() -> InlineKeyboardMarkup:
+    """Кнопки під карткою «не зрозумів»: спробувати той самий запит через ШІ."""
+    builder = InlineKeyboardBuilder()
+    builder.button(text="🧠 Уточнити через ШІ", callback_data="ai:retry")
+    builder.button(text="⬅️ До меню", callback_data="menu:main")
+    builder.adjust(1, 1)
+    return builder.as_markup()
+
+
 def result_menu(
     section_key: str,
     *,
     has_recommendations: bool = True,
     has_country: bool = False,
     run_in: tuple[str, str] | None = None,
+    ai_retry: bool = False,
 ) -> InlineKeyboardMarkup:
     """Кнопки під карткою результату (ТЗ, розділ 25).
 
@@ -111,6 +121,9 @@ def result_menu(
     run_in — (ключ, назва) бази, де є відкинуті цим запитом виміри. Якщо задано,
     додається кнопка «виконати цей запит там»."""
     builder = InlineKeyboardBuilder()
+    # Якщо частину запиту не зрозуміли — першою даємо кнопку «уточнити через ШІ».
+    if ai_retry:
+        builder.button(text="🧠 Уточнити через ШІ", callback_data="ai:retry")
     if has_recommendations:
         builder.button(text="🔎 Підібрати близькі донори", callback_data="res:nearby")
     if run_in is not None:
@@ -127,21 +140,28 @@ def result_menu(
     builder.button(text="⬅️ До меню", callback_data="menu:main")
 
     # Усі кнопки по одній у рядок, крім останньої пари («Новий запит» + «До меню»).
-    singles = 3 + int(has_recommendations) + int(has_country) + int(run_in is not None)
+    singles = (
+        3 + int(has_recommendations) + int(has_country) + int(run_in is not None) + int(ai_retry)
+    )
     builder.adjust(*([1] * singles), 2)
     return builder.as_markup()
 
 
-def both_bases_menu(bases: list[tuple[str, str]]) -> InlineKeyboardMarkup:
+def both_bases_menu(
+    bases: list[tuple[str, str]], *, ai_retry: bool = False
+) -> InlineKeyboardMarkup:
     """Кнопки під зведеним повідомленням по обох базах.
 
     bases — список (ключ, назва). Для кожної — кнопка «Детально по …», що
-    відкриває повну картку саме цієї бази з усіма додатковими блоками."""
+    відкриває повну картку саме цієї бази з усіма додатковими блоками.
+    ai_retry — чи додати «🧠 Уточнити через ШІ» (коли частину запиту не зрозуміли)."""
     builder = InlineKeyboardBuilder()
+    if ai_retry:
+        builder.button(text="🧠 Уточнити через ШІ", callback_data="ai:retry")
     for key, title in bases:
         builder.button(text=f"📊 Детально по {title}", callback_data=f"res:detail:{key}")
     builder.button(text="⬅️ До меню", callback_data="menu:main")
-    builder.adjust(*([1] * len(bases)), 1)
+    builder.adjust(*([1] * (len(bases) + int(ai_retry))), 1)
     return builder.as_markup()
 
 
