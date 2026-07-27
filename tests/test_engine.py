@@ -132,6 +132,36 @@ class TestФільтри:
         assert run_query(magic, query).core.count == 24
 
 
+class TestНезаспамлені:
+    """«Незаспамлені» = заспамленість рівно 0 і вихідних > 0. Мертві 0,0 — ні."""
+
+    def _mordy(self, donors):
+        return Dataset("mordy", "Морди", "Морди", tuple(donors), 0.0, tracks_spam=True)
+
+    def test_мертвий_сайт_не_чистий(self):
+        """Ідеально чистий проходить, мертвий (0 вихідних, 0 спаму) — ні."""
+        clean = Donor("a", "", "", None, None, outlinks=10, spammed=0)
+        dead = Donor("b", "", "", None, None, outlinks=0, spammed=0)
+        spammy = Donor("c", "", "", None, None, outlinks=20, spammed=5)
+        result = run_query(self._mordy([clean, dead, spammy]), DonorQuery("mordy", spam_max=0))
+        assert result.core.count == 1
+
+    async def test_на_живій_фікстурі_лише_uk1(self, mordy):
+        """У фікстурі чистий лише uk1 (10 вихідних, 0 спаму); m4 (0,0) виключено."""
+        result = run_query(mordy, DonorQuery("mordy", spam_max=0))
+        assert result.core.count == 1
+
+    def test_опис_каже_про_відсутність_мертвих(self):
+        assert "без мертвих" in DonorQuery("mordy", spam_max=0).describe()
+
+    def test_адʼєктив_незаспамлені_ставить_нуль(self):
+        from app.text.freeform import parse_free_text
+
+        query = parse_free_text("Морди незаспамлені").query
+        assert query.spam_max == 0
+        assert query.spam_min is None
+
+
 class TestРозподіли:
     async def test_розподіл_по_зонах(self, magic):
         result = run_query(magic, DonorQuery(section_key="magic"))

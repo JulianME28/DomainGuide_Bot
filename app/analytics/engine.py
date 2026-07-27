@@ -301,12 +301,18 @@ def passes_metrics(donor: Donor, query: DonorQuery) -> bool:
         # Фільтр по колонці GEO: країна походження трафіку з N>0. GEO=0 або
         # інша країна — не проходить, незалежно від доменної зони й мови.
         return False
-    return (
+    if not (
         _in_range(donor.dr, query.dr_min, query.dr_max)
         and _in_range(donor.traffic, query.traffic_min, query.traffic_max)
         and _in_range(donor.outlinks, query.outlinks_min, query.outlinks_max)
         and _in_range(donor.spammed, query.spam_min, query.spam_max)
-    )
+    ):
+        return False
+    # «Незаспамлені» = ідеально чисті: заспамленість РІВНО 0 і вихідних > 0.
+    # Мертвий сайт (вихідних 0, заспамлених 0) — не «чистий», а непрацюючий
+    # (дані просто не оновились), тож у «незаспамлені» НЕ входить. Це та сама
+    # логіка, що й у розподілі, де група «0,0» зарахована в найгіршу.
+    return query.spam_max != 0 or (donor.outlinks is not None and donor.outlinks > 0)
 
 
 def passes_core(donor: Donor, query: DonorQuery) -> bool:

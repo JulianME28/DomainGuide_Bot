@@ -287,7 +287,13 @@ class DonorQuery:
         if self.outlinks_min is not None or self.outlinks_max is not None:
             parts.append(_describe_range("вихідних лінків", self.outlinks_min, self.outlinks_max))
         if self.spam_min is not None or self.spam_max is not None:
-            parts.append(_describe_range("заспамленість", self.spam_min, self.spam_max))
+            # «Незаспамлені» (заспамленість рівно 0) — це «ідеально чисті»: мертві
+            # сайти з 0 вихідних сюди не входять. Кажемо про це прямо, бо «до 0»
+            # звучало б так, ніби порожні/непрацюючі теж рахуються.
+            if self.spam_max == 0 and self.spam_min in (None, 0):
+                parts.append("тільки незаспамлені (заспамленість 0, без мертвих сайтів)")
+            else:
+                parts.append(_describe_range("заспамленість", self.spam_min, self.spam_max))
 
         return ", ".join(part for part in parts if part) or "без фільтрів"
 
