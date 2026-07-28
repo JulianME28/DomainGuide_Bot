@@ -14,10 +14,11 @@ import pytest
 
 from app.analytics.query import DonorQuery
 from app.dictionary.countries import country_by_code
-from app.llm.interpreter import LLMInterpreter, interpret_json
+from app.llm.interpreter import SYSTEM_PROMPT, LLMInterpreter, interpret_json
 from app.llm.provider import AnthropicProvider, LLMError, OpenAIProvider
 from app.llm.service import build_ai_service
 from app.settings import Settings
+from app.text.freeform import parse_free_text
 
 
 def anthropic_response(text: str) -> dict:
@@ -172,6 +173,90 @@ class TestІнтерпретатор:
         post = fake_post(anthropic_response("вибачте, не зрозумів запит"))
         interpreter = LLMInterpreter(AnthropicProvider("k", "m", 1, http_post=post))
         assert await interpreter.interpret("...") is None
+
+
+class TestУзгодженняЗПарсером:
+    """ШІ має розбирати запит так само, як словниковий парсер: «вихідні» = фільтр
+    ЗАСПАМЛЕНОСТІ (стовпець G), окремого числового фільтра вихідних немає.
+
+    LLM тут моканий: у відповідь підкладаємо JSON, який модель має віддати за
+    ОНОВЛЕНОЮ інструкцією. Перевіряємо, що інтерпретатор зводить це до того самого
+    фільтра, що й парсер, а сам промт більше не дозволяє поле про вихідні."""
+
+    def _interpreter(self, json_text: str) -> LLMInterpreter:
+        post = fake_post(anthropic_response(json_text))
+        return LLMInterpreter(AnthropicProvider("k", "m", 1, http_post=post))
+
+    def _fields(self, query: DonorQuery) -> tuple:
+        return (query.section_key, query.country, query.spam_min, query.spam_max)
+
+    async def test_до_20_вихідних_це_заспамленість_без_окремого_фільтра(self):
+        """«Морди до 20 вихідних по Британії» → spam_max=20, без поля вихідних."""
+        interpreter = self._interpreter('{"section":"mordy","country":"gb","spam_max":20}')
+        query = await interpreter.interpret("Морди до 20 вихідних по Британії")
+        assert query is not None
+        assert query.section_key == "mordy"
+        assert query.country is country_by_code("gb")
+        assert (query.spam_min, query.spam_max) == (None, 20)
+        assert not hasattr(query, "outlinks_min")
+        assert not hasattr(query, "outlinks_max")
+
+    async def test_збіг_зі_словниковим_парсером(self):
+        """Той самий запит через ШІ і через парсер дає той самий фільтр."""
+        text = "Морди до 20 вихідних лінків по Британії"
+        dict_query = parse_free_text(text).query
+        ai_query = await self._interpreter(
+            '{"section":"mordy","country":"gb","spam_max":20}'
+        ).interpret(text)
+        assert self._fields(ai_query) == self._fields(dict_query)
+        assert self._fields(dict_query) == ("mordy", country_by_code("gb"), None, 20)
+
+    async def test_заспамленість_до_20_те_саме(self):
+        query = await self._interpreter('{"section":"mordy","spam_max":20}').interpret(
+            "заспамленість до 20"
+        )
+        assert (query.spam_min, query.spam_max) == (None, 20)
+
+    async def test_dr_від_50_лишається_мінімумом(self):
+        """Напрямок DR не плутається: «від 50» — це dr_min, а не dr_max."""
+        query = await self._interpreter('{"dr_min":50}').interpret("DR від 50")
+        assert query.dr_min == 50
+        assert query.dr_max is None
+
+    async def test_незаспамлені_це_низька_заспамленість(self):
+        """«незаспамлені» → spam_max=0 — рівно як у парсері."""
+        dict_query = parse_free_text("незаспамлені Морди").query
+        ai_query = await self._interpreter('{"section":"mordy","spam_max":0}').interpret(
+            "незаспамлені Морди"
+        )
+        assert ai_query.spam_max == 0
+        assert ai_query.spam_max == dict_query.spam_max
+
+    def test_легасі_вихідні_від_моделі_зводяться_до_заспамленості(self):
+        """Захисна сітка: навіть якщо модель поверне старе outlinks_max — це spam."""
+        query = interpret_json({"section": "mordy", "outlinks_max": 20})
+        assert query.spam_max == 20
+        assert not hasattr(query, "outlinks_max")
+
+
+class TestПромтБезПоляВихідних:
+    """Схема/інструкція для моделі не має окремого фільтра вихідних (стовпець F)."""
+
+    def test_у_схемі_немає_поля_вихідних(self):
+        assert '"spam_min","spam_max"' in SYSTEM_PROMPT
+        assert "outlinks" not in SYSTEM_PROMPT.lower()
+
+    def test_промт_явно_забороняє_окремий_фільтр_вихідних(self):
+        lowered = SYSTEM_PROMPT.lower()
+        assert "заспамлен" in lowered
+        assert "вихідн" in lowered
+        assert "не існує" in lowered  # «Окремого фільтра „вихідні лінки" НЕ існує»
+
+    def test_промт_задає_напрямки(self):
+        """DR/трафік — мінімум за замовчуванням; заспамленість — максимум."""
+        assert "spam_max" in SYSTEM_PROMPT
+        assert "traffic_min" in SYSTEM_PROMPT
+        assert "dr_min" in SYSTEM_PROMPT
 
 
 class TestСервіс:
