@@ -370,6 +370,12 @@ class TestПромтБезПоляВихідних:
         assert "конкретне число" in lowered
         assert "не став" in lowered
 
+    def test_промт_велить_виправляти_одруки(self):
+        """Промт має просити виправляти одруки в назвах країн/мов (не відкидати)."""
+        lowered = SYSTEM_PROMPT.lower()
+        assert "одрук" in lowered
+        assert "англьійською" in lowered  # конкретний приклад одруку → мова en
+
 
 class TestСервіс:
     def test_вимкнено_без_ключа(self):

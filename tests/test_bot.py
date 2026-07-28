@@ -862,3 +862,68 @@ class TestУточнитиЧерезШІ:
         callback = FakeCallback("ai:retry", message=FakeMessage())
         await retry_via_ai(callback, services, FakeState({}))  # немає last_text
         assert any("Немає запиту" in (a[0] or "") for a in callback.message.answers)
+
+    # -- Повний оригінальний текст у кнопці «Уточнити через ШІ» ----------------
+
+    _TYPO_TEXT = "Скільки донорів Меджик з англьійською мовою"
+
+    async def _free_text_then_state(self, repository, columns_config, ai, text):
+        """Проганяє вільний текст (з'явиться картка «не зрозумів») і повертає стан
+        із збереженим last_text — як перед натисканням кнопки в реальному боті."""
+        from app.bot.handlers.freeform import handle_free_text
+
+        services = self._services(repository, columns_config, ai)
+        state = FakeState({})
+        await handle_free_text(FakeMessage(text=text), services, state)
+        return services, state
+
+    async def test_ретрай_передає_повний_оригінальний_текст(self, repository, columns_config):
+        """Кнопка передає в ШІ ПОВНИЙ оригінал, а не залишок після словника."""
+        from app.bot.handlers.ai import retry_via_ai
+
+        spy = SpyAI(None)  # ШІ «не зрозумів» → зупиняємось до show_result
+        services, state = await self._free_text_then_state(
+            repository, columns_config, spy, self._TYPO_TEXT
+        )
+        spy.calls.clear()
+        await retry_via_ai(FakeCallback("ai:retry"), services, state)
+        assert spy.calls == [(1, self._TYPO_TEXT)]  # повний текст, не урізаний
+
+    async def test_ретрай_і_індивідуальний_дають_той_самий_вхід(self, repository, columns_config):
+        """Обидва шляхи викликають ШІ ІДЕНТИЧНО — той самий текст на тому самому запиті."""
+        from app.bot.handlers.ai import receive_ai_query, retry_via_ai
+
+        # Шлях кнопки: вільний текст → картка → retry.
+        spy_btn = SpyAI(None)
+        services_btn, state = await self._free_text_then_state(
+            repository, columns_config, spy_btn, self._TYPO_TEXT
+        )
+        spy_btn.calls.clear()
+        await retry_via_ai(FakeCallback("ai:retry"), services_btn, state)
+
+        # Шлях «Індивідуальний запит»: той самий текст напряму.
+        spy_ind = SpyAI(None)
+        services_ind = self._services(repository, columns_config, spy_ind)
+        await receive_ai_query(FakeMessage(text=self._TYPO_TEXT), services_ind, FakeState({}))
+
+        assert spy_btn.calls[-1] == spy_ind.calls[-1] == (1, self._TYPO_TEXT)
+
+    async def test_ретрай_виправляє_одрук_англійською(self, repository, columns_config):
+        """Одрук «англьійською» через кнопку → ШІ (мок) розбирає як мову en, і бот
+        показує картку результату, а не «не зрозумів»."""
+        from app.bot.handlers.ai import retry_via_ai
+
+        # Модель виправляє одрук і повертає мову en (як має робити за промтом).
+        spy = SpyAI(DonorQuery(section_key="magic", language=language_by_code("en")))
+        services, state = await self._free_text_then_state(
+            repository, columns_config, SpyAI(None), self._TYPO_TEXT
+        )
+        # Підмінюємо ШІ на «розумний» перед натисканням кнопки (текст уже в стані).
+        services = self._services(repository, columns_config, spy)
+        callback = FakeCallback("ai:retry")
+        await retry_via_ai(callback, services, state)
+
+        assert spy.calls == [(1, self._TYPO_TEXT)]  # ШІ отримав повний текст
+        card = callback.sents[-1].edits[-1][0]
+        assert "ШІ зрозумів як" in card  # це картка результату, не «не зрозумів»
+        assert "англійськ" in card.lower()  # мову впізнано
