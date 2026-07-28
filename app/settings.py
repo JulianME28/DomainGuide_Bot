@@ -49,6 +49,9 @@ class Settings:
     llm_timeout_seconds: int = 20
     llm_calls_limit: int = 10
     llm_window_seconds: int = 3600
+    # Ліміт токенів на відповідь ШІ. Запас потрібен, бо reasoning-моделі
+    # витрачають частину на «міркування» — інакше JSON обірветься.
+    llm_max_tokens: int = 800
 
     @property
     def llm_enabled(self) -> bool:
@@ -213,4 +216,5 @@ def load_settings(env_file: str | Path | None = None, *, require_token: bool = T
         llm_window_seconds=_parse_int(
             os.getenv("LLM_WINDOW_SECONDS", ""), "LLM_WINDOW_SECONDS", 3600
         ),
+        llm_max_tokens=_parse_int(os.getenv("LLM_MAX_TOKENS", ""), "LLM_MAX_TOKENS", 800),
     )

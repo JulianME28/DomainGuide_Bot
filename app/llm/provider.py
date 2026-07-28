@@ -26,6 +26,11 @@ ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
 ANTHROPIC_VERSION = "2023-06-01"
 OPENAI_URL = "https://api.openai.com/v1/chat/completions"
 
+# Скільки токенів дозволяємо моделі на відповідь. JSON-фільтр короткий, але
+# reasoning-моделі витрачають частину ліміту на «міркування» — тому запас,
+# інакше відповідь обірветься (finish_reason=length) з порожнім текстом.
+DEFAULT_MAX_TOKENS = 800
+
 
 def _log_network_error(exc: BaseException) -> None:
     """Пише в лог ПОВНУ причину мережевої помилки виклику ШІ. Рівень ERROR.
@@ -54,7 +59,19 @@ class LLMError(RuntimeError):
     """Будь-яка проблема з викликом ШІ: мережа, таймаут, поганий формат.
 
     Текст цього винятку НІКОЛИ не містить ключа — його можна безпечно логувати.
+
+    `stage` — на якій саме стадії стався збій, щоб лог і повідомлення користувачу
+    були конкретні (а не одне загальне «недоступний»):
+      * "network"    — HTTP/таймаут/мережа;
+      * "no_text"    — у відповіді немає поля з текстом (несподіваний формат);
+      * "empty"      — модель повернула порожній текст;
+      * "truncated"  — відповідь обірвана на ліміті токенів (finish_reason=length);
+      * "unparsable" — текст є, але валідного JSON у ньому немає.
     """
+
+    def __init__(self, message: str, *, stage: str = "network") -> None:
+        super().__init__(message)
+        self.stage = stage
 
 
 class LLMProvider(Protocol):
@@ -135,10 +152,12 @@ async def _post_json(
         return await asyncio.to_thread(http_post, url, headers, body, timeout)
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         _log_network_error(exc)
-        raise LLMError(f"мережева помилка виклику ШІ: {type(exc).__name__}") from None
+        raise LLMError(
+            f"мережева помилка виклику ШІ: {type(exc).__name__}", stage="network"
+        ) from None
     except Exception as exc:  # будь-що інше — теж деталі в лог, не в текст
         _log_network_error(exc)
-        raise LLMError(f"помилка виклику ШІ: {type(exc).__name__}") from None
+        raise LLMError(f"помилка виклику ШІ: {type(exc).__name__}", stage="network") from None
 
 
 class AnthropicProvider:
@@ -151,7 +170,7 @@ class AnthropicProvider:
         timeout_seconds: float,
         *,
         http_post: HttpPost | None = None,
-        max_tokens: int = 512,
+        max_tokens: int = DEFAULT_MAX_TOKENS,
     ) -> None:
         self._api_key = api_key
         self.model = model
@@ -166,7 +185,7 @@ class AnthropicProvider:
             self._api_key, self.model, system, user_text, self._max_tokens
         )
         data = await _post_json(self._http_post, url, headers, body, self._timeout)
-        return _extract_anthropic_text(data)
+        return _extract_anthropic_text(data, self._max_tokens)
 
     def __repr__(self) -> str:
         # Ключ у repr не потрапляє — лише модель.
@@ -187,7 +206,7 @@ class OpenAIProvider:
         timeout_seconds: float,
         *,
         http_post: HttpPost | None = None,
-        max_tokens: int = 512,
+        max_tokens: int = DEFAULT_MAX_TOKENS,
     ) -> None:
         self._api_key = api_key
         self.model = model
@@ -200,29 +219,57 @@ class OpenAIProvider:
             self._api_key, self.model, system, user_text, self._max_tokens
         )
         data = await _post_json(self._http_post, url, headers, body, self._timeout)
-        return _extract_openai_text(data)
+        return _extract_openai_text(data, self._max_tokens)
 
     def __repr__(self) -> str:
         return f"OpenAIProvider(model={self.model!r})"
 
 
-def _extract_anthropic_text(data: dict) -> str:
-    """Дістає текст із відповіді Anthropic Messages API: content[].text."""
+def _raise_empty_or_truncated(finish_reason: object, truncated_value: str, max_tokens: int) -> None:
+    """Порожній текст — це або обрізання на ліміті токенів, або просто порожньо.
+
+    Розрізняємо за причиною зупинки (finish_reason у OpenAI, stop_reason у
+    Anthropic). Обрізання — найчастіша прихована причина: reasoning-модель
+    з'їдає ліміт на «міркування» й не встигає видати JSON."""
+    if finish_reason == truncated_value:
+        raise LLMError(
+            f"відповідь ШІ обрізана на ліміті токенів (причина={finish_reason}, "
+            f"max_tokens={max_tokens}); збільшіть LLM_MAX_TOKENS",
+            stage="truncated",
+        )
+    raise LLMError(f"порожня відповідь ШІ (причина={finish_reason})", stage="empty")
+
+
+def _extract_anthropic_text(data: dict, max_tokens: int) -> str:
+    """Дістає текст із відповіді Anthropic Messages API: content[].text.
+
+    Порожній текст розрізняємо на «обрізано» / «порожньо» за stop_reason."""
     content = data.get("content") if isinstance(data, dict) else None
-    if isinstance(content, list):
-        for block in content:
-            if isinstance(block, dict) and block.get("type") == "text":
-                return str(block.get("text", ""))
-    raise LLMError("у відповіді ШІ немає тексту")
+    if not isinstance(content, list):
+        raise LLMError("у відповіді ШІ немає тексту (немає content)", stage="no_text")
+    text = ""
+    for block in content:
+        if isinstance(block, dict) and block.get("type") == "text":
+            text = str(block.get("text", ""))
+            break
+    if text.strip():
+        return text
+    _raise_empty_or_truncated(data.get("stop_reason"), "max_tokens", max_tokens)
+    raise AssertionError("недосяжно")  # _raise_* завжди кидає — для типізатора
 
 
-def _extract_openai_text(data: dict) -> str:
-    """Дістає текст із відповіді OpenAI Chat Completions: choices[0].message.content."""
+def _extract_openai_text(data: dict, max_tokens: int) -> str:
+    """Дістає текст із відповіді OpenAI Chat Completions: choices[0].message.content.
+
+    Порожній текст розрізняємо на «обрізано» / «порожньо» за finish_reason."""
     choices = data.get("choices") if isinstance(data, dict) else None
-    if isinstance(choices, list) and choices:
-        message = choices[0].get("message") if isinstance(choices[0], dict) else None
-        if isinstance(message, dict):
-            content = message.get("content")
-            if isinstance(content, str):
-                return content
-    raise LLMError("у відповіді ШІ немає тексту")
+    if not (isinstance(choices, list) and choices and isinstance(choices[0], dict)):
+        raise LLMError("у відповіді ШІ немає тексту (немає choices)", stage="no_text")
+    first = choices[0]
+    message = first.get("message") if isinstance(first.get("message"), dict) else {}
+    content = message.get("content")
+    text = content if isinstance(content, str) else ""
+    if text.strip():
+        return text
+    _raise_empty_or_truncated(first.get("finish_reason"), "length", max_tokens)
+    raise AssertionError("недосяжно")  # _raise_* завжди кидає — для типізатора

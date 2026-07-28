@@ -15,14 +15,41 @@ from __future__ import annotations
 import time
 from collections import defaultdict, deque
 from collections.abc import Callable
+from dataclasses import dataclass
 
 from app.analytics.query import DonorQuery
 from app.llm.interpreter import LLMInterpreter
-from app.llm.provider import AnthropicProvider, HttpPost, LLMProvider, OpenAIProvider
+from app.llm.provider import AnthropicProvider, HttpPost, LLMError, LLMProvider, OpenAIProvider
 from app.logging_setup import get_logger
 from app.settings import Settings
 
 logger = get_logger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class AIOutcome:
+    """Результат спроби ШІ + ЧОМУ (щоб показати користувачу точне повідомлення).
+
+    reason:
+      * "ok"          — розпізнано, query заповнено;
+      * "limit"       — вичерпано ліміт викликів ШІ;
+      * "unavailable" — ШІ недоступний: мережа, порожня відповідь, дивний формат;
+      * "unparsable"  — ШІ відповів, але не валідним JSON / відповідь обрізана;
+      * "empty"       — валідний JSON, але жодного дозволеного фільтра не впізнано.
+    """
+
+    query: DonorQuery | None
+    reason: str
+
+
+# Стадія помилки виклику (LLMError.stage) → причина для користувача/логіки.
+_STAGE_TO_REASON = {
+    "truncated": "unparsable",
+    "unparsable": "unparsable",
+    "empty": "unavailable",
+    "no_text": "unavailable",
+    "network": "unavailable",
+}
 
 
 class AICallLimiter:
@@ -85,26 +112,50 @@ class AIService:
         return self._counter.today
 
     async def try_interpret(self, user_id: int, text: str) -> DonorQuery | None:
-        """Пробує розібрати запит через ШІ. None — не вийшло (і це нормально)."""
+        """Пробує розібрати запит через ШІ. None — не вийшло (і це нормально).
+
+        Тонка обгортка над interpret_with_reason для викликів, яким причина не
+        потрібна (автоматичний фолбек словника не показує окремих повідомлень)."""
+        return (await self.interpret_with_reason(user_id, text)).query
+
+    async def interpret_with_reason(self, user_id: int, text: str) -> AIOutcome:
+        """Як try_interpret, але повертає ще й ПРИЧИНУ невдачі — щоб бот показав
+        конкретне повідомлення, а лог мав стадію збою (не одне «недоступний»)."""
         now = self._clock()
         if not self._limiter.allow(user_id, now):
             logger.info("Ліміт викликів ШІ вичерпано: користувач %s", user_id)
-            return None
+            return AIOutcome(None, "limit")
 
         self._counter.bump(now)
         try:
             query = await self._interpreter.interpret(text)
-        except Exception as exc:
-            # exc — це LLMError без ключа всередині, логувати безпечно.
-            logger.warning("Виклик ШІ не вдався (користувач %s): %s", user_id, exc)
-            return None
+        except LLMError as exc:
+            # Текст LLMError не містить ключа — логувати безпечно. Стадію пишемо
+            # окремо, щоб у логу було видно, ЩО саме зламалось.
+            stage = getattr(exc, "stage", "network")
+            reason = _STAGE_TO_REASON.get(stage, "unavailable")
+            logger.error(
+                "Виклик ШІ не вдався (користувач %s): стадія=%s, причина=%s: %s",
+                user_id,
+                stage,
+                reason,
+                exc,
+            )
+            return AIOutcome(None, reason)
+        except Exception as exc:  # несподіване — теж не валимо бота
+            logger.error(
+                "Виклик ШІ впав несподівано (користувач %s): %s", user_id, exc, exc_info=exc
+            )
+            return AIOutcome(None, "unavailable")
 
-        logger.info(
-            "Виклик ШІ: користувач %s, результат — %s",
-            user_id,
-            "розпізнано" if query is not None else "порожньо",
-        )
-        return query
+        if query is None:
+            logger.info(
+                "Виклик ШІ (користувач %s): фільтр порожній після whitelist-валідації", user_id
+            )
+            return AIOutcome(None, "empty")
+
+        logger.info("Виклик ШІ (користувач %s): розпізнано", user_id)
+        return AIOutcome(query, "ok")
 
 
 def _build_provider(settings: Settings, http_post: HttpPost | None) -> LLMProvider:
@@ -117,6 +168,7 @@ def _build_provider(settings: Settings, http_post: HttpPost | None) -> LLMProvid
         "model": settings.llm_model,
         "timeout_seconds": settings.llm_timeout_seconds,
         "http_post": http_post,
+        "max_tokens": settings.llm_max_tokens,
     }
     if settings.llm_provider == "openai":
         return OpenAIProvider(**common)

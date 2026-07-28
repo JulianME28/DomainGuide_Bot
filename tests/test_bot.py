@@ -638,15 +638,24 @@ class TestМайстерGEO:
 
 
 class SpyAI:
-    """Підміна сервісу ШІ: рахує виклики й віддає заготовлений результат."""
+    """Підміна сервісу ШІ: рахує виклики й віддає заготовлений результат.
 
-    def __init__(self, result=None) -> None:
+    reason дозволяє в тесті задати причину невдачі (нерозбірне / порожнє /
+    недоступне), щоб перевірити відповідні повідомлення бота."""
+
+    def __init__(self, result=None, *, reason=None) -> None:
         self.result = result
+        self.reason = reason or ("ok" if result is not None else "unavailable")
         self.calls: list[tuple] = []
 
     async def try_interpret(self, user_id, text):
+        return (await self.interpret_with_reason(user_id, text)).query
+
+    async def interpret_with_reason(self, user_id, text):
+        from app.llm.service import AIOutcome
+
         self.calls.append((user_id, text))
-        return self.result
+        return AIOutcome(self.result, self.reason)
 
 
 class TestШІФолбек:
@@ -752,6 +761,28 @@ class TestІндивідуальнийЗапит:
             a[0] for a in message.answers
         ]
         assert any("не зміг" in t for t in shown)
+
+    async def test_нерозбірна_відповідь_окреме_повідомлення(self, repository, columns_config):
+        """Нерозбірний/обрізаний JSON → «не вдалося розібрати», не «недоступний»."""
+        from app.bot.handlers.ai import receive_ai_query
+
+        services = self._services(repository, columns_config, SpyAI(None, reason="unparsable"))
+        message = FakeMessage(text="Морди до 20 по Британії")
+        await receive_ai_query(message, services, FakeState({}))
+
+        shown = [e[0] for sent in message.sents for e in sent.edits]
+        assert any("не вдалося розібрати" in t.lower() for t in shown)
+
+    async def test_порожній_фільтр_окреме_повідомлення(self, repository, columns_config):
+        """Валідний JSON, але нічого не впізнано → «не зрозумів, що відфільтрувати»."""
+        from app.bot.handlers.ai import receive_ai_query
+
+        services = self._services(repository, columns_config, SpyAI(None, reason="empty"))
+        message = FakeMessage(text="абракадабра")
+        await receive_ai_query(message, services, FakeState({}))
+
+        shown = [e[0] for sent in message.sents for e in sent.edits]
+        assert any("відфільтрувати" in t for t in shown)
 
     async def test_ручний_виклик_рахується_лічильником(self, repository, columns_config):
         """Ліміт/лічильник (наявні) застосовуються й до ручних викликів ШІ."""

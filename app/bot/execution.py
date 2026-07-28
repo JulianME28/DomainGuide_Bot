@@ -302,7 +302,29 @@ AI_FAILED_TEXT = (
     "трохи згодом або скористайтеся кнопками меню — /start."
 )
 
+# ШІ відповів, але не у форматі, який бот може застосувати (нерозбірний JSON або
+# відповідь обірвалася на ліміті токенів) — кажемо це чесно, не «недоступний».
+AI_UNPARSABLE_TEXT = (
+    "🧠 <b>Не вдалося розібрати відповідь ШІ.</b>\n\n"
+    "ШІ відповів, але не у форматі, який бот може застосувати (можливо, відповідь "
+    "була надто довга й обірвалася). Спробуйте переформулювати простіше або "
+    "скористайтеся кнопками меню — /start."
+)
+
+# ШІ зрозумів текст, але не витягнув із нього жодного дозволеного фільтра.
+AI_EMPTY_TEXT = (
+    "🧠 <b>ШІ не зрозумів, що саме відфільтрувати.</b>\n\n"
+    "Спробуйте вказати країну, мову чи числові пороги явніше або скористайтеся "
+    "кнопками меню — /start."
+)
+
 AI_STATUS_TEXT = "🧠 Питаю ШІ..."
+
+# Причина невдачі ШІ (AIOutcome.reason) → повідомлення користувачу.
+_AI_REASON_TEXT = {
+    "unparsable": AI_UNPARSABLE_TEXT,
+    "empty": AI_EMPTY_TEXT,
+}
 
 
 async def run_ai_query(
@@ -327,10 +349,13 @@ async def run_ai_query(
         return
 
     status = await message.answer(AI_STATUS_TEXT)
-    query = await resolve_with_ai(services, user_id, text.strip())
-    if query is None:
-        await status.edit_text(AI_FAILED_TEXT, reply_markup=back_to_menu())
+    outcome = await services.ai.interpret_with_reason(user_id, text.strip())
+    if outcome.query is None:
+        # Причина визначає повідомлення: нерозбірне / порожній фільтр / недоступно.
+        failure_text = _AI_REASON_TEXT.get(outcome.reason, AI_FAILED_TEXT)
+        await status.edit_text(failure_text, reply_markup=back_to_menu())
         return
+    query = outcome.query
 
     # Розпізнане ШІ стає активним запитом (як звичайний), стан скидаємо.
     await state.set_state(None)

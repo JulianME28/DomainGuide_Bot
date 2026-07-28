@@ -16,7 +16,14 @@ import re
 from app.analytics.query import DonorQuery
 from app.dictionary.countries import COUNTRIES, country_by_code
 from app.dictionary.languages import LANGUAGES, language_by_code
-from app.llm.provider import LLMProvider
+from app.llm.provider import LLMError, LLMProvider
+from app.logging_setup import get_logger
+
+logger = get_logger(__name__)
+
+# Скільки символів сирої відповіді моделі писати в лог при помилці розбору —
+# щоб було видно, ЩО саме вона повернула (без ключа: це лише текст моделі).
+RAW_LOG_LIMIT = 300
 
 # Розділи, які ШІ може обрати (лише ті, що читають дані).
 ALLOWED_SECTIONS = frozenset({"magic", "mordy"})
@@ -99,18 +106,59 @@ def _coerce_number(value: object) -> float | None:
     return None
 
 
+def _strip_code_fences(text: str) -> str:
+    """Прибирає markdown-огорожі ``` і ```json, лишаючи сам вміст."""
+    return re.sub(r"```[a-zA-Z0-9]*", "", text)
+
+
+def _iter_balanced_objects(text: str):
+    """Породжує кожен збалансований об'єкт {...} верхнього рівня по черзі.
+
+    Свій сканер (а не жадібний regex) — щоб зайві дужки в поясненні навколо JSON
+    (напр. «Ось {результат}: {"country":"de"}») не збивали розбір: кандидати
+    перебираємо, доки якийсь не розпарситься. Лапки й екрановані символи
+    враховуємо, аби дужка всередині рядка не рахувалась."""
+    start = text.find("{")
+    while start != -1:
+        depth = 0
+        in_string = False
+        escaped = False
+        for i in range(start, len(text)):
+            ch = text[i]
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif ch == "\\":
+                    escaped = True
+                elif ch == '"':
+                    in_string = False
+                continue
+            if ch == '"':
+                in_string = True
+            elif ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    yield text[start : i + 1]
+                    break
+        start = text.find("{", start + 1)
+
+
 def _parse_json(raw: str) -> dict | None:
-    """Дістає JSON-об'єкт із відповіді (навіть якщо навколо є зайвий текст)."""
+    """Дістає JSON-об'єкт із відповіді, навіть якщо модель обгорнула його в текст
+    чи markdown-блок (```json). Повертає None, якщо валідного об'єкта немає."""
     if not raw:
         return None
-    match = re.search(r"\{.*\}", raw, re.DOTALL)
-    if match is None:
-        return None
-    try:
-        payload = json.loads(match.group(0))
-    except (json.JSONDecodeError, ValueError):
-        return None
-    return payload if isinstance(payload, dict) else None
+    text = _strip_code_fences(raw)
+    for candidate in _iter_balanced_objects(text):
+        try:
+            payload = json.loads(candidate)
+        except (json.JSONDecodeError, ValueError):
+            continue  # цей кандидат — не JSON, пробуємо наступний
+        if isinstance(payload, dict):
+            return payload
+    return None
 
 
 def interpret_json(payload: dict) -> DonorQuery | None:
@@ -172,9 +220,18 @@ class LLMInterpreter:
         self._system = f"{SYSTEM_PROMPT}\n{catalog or build_catalog()}"
 
     async def interpret(self, text: str) -> DonorQuery | None:
-        """Кидає LLMError на проблемі з викликом — ловить її вже AIService."""
+        """Текст → DonorQuery. Кидає LLMError на будь-якій невдачі виклику чи
+        розбору (ловить її вже AIService); None — коли модель відповіла валідно,
+        але жоден дозволений фільтр не впізнано (тихий фолбек на словник)."""
         raw = await self._provider.complete(self._system, text)
         payload = _parse_json(raw)
         if payload is None:
-            return None
+            # Текст є, але JSON у ньому не знайшли — показуємо в лог, ЩО повернула
+            # модель (перші символи), щоб причина була видна одразу.
+            logger.error(
+                "ШІ повернув відповідь без валідного JSON (перші %d симв.): %r",
+                RAW_LOG_LIMIT,
+                raw[:RAW_LOG_LIMIT],
+            )
+            raise LLMError("не вдалося витягти JSON з відповіді ШІ", stage="unparsable")
         return interpret_json(payload)

@@ -21,14 +21,18 @@ from app.settings import Settings
 from app.text.freeform import parse_free_text
 
 
-def anthropic_response(text: str) -> dict:
-    """Відповідь Messages API у мінімальному вигляді."""
-    return {"content": [{"type": "text", "text": text}]}
+def anthropic_response(text: str, *, stop_reason: str | None = None) -> dict:
+    """Відповідь Messages API у мінімальному вигляді (з опційним stop_reason)."""
+    return {"content": [{"type": "text", "text": text}], "stop_reason": stop_reason}
 
 
-def openai_response(text: str) -> dict:
-    """Відповідь OpenAI Chat Completions у мінімальному вигляді."""
-    return {"choices": [{"message": {"role": "assistant", "content": text}}]}
+def openai_response(text: str, *, finish_reason: str | None = None) -> dict:
+    """Відповідь OpenAI Chat Completions (з опційним finish_reason)."""
+    return {
+        "choices": [
+            {"message": {"role": "assistant", "content": text}, "finish_reason": finish_reason}
+        ]
+    }
 
 
 def fake_post(response: dict | None = None, *, raises: Exception | None = None):
@@ -169,10 +173,96 @@ class TestІнтерпретатор:
         assert query.country is country_by_code("de")
         assert query.dr_min == 40
 
-    async def test_відповідь_сміттям_дає_None(self):
+    async def test_відповідь_сміттям_це_помилка_розбору(self):
+        """Текст без JSON — це помилка стадії розбору (unparsable), не тихе None."""
         post = fake_post(anthropic_response("вибачте, не зрозумів запит"))
         interpreter = LLMInterpreter(AnthropicProvider("k", "m", 1, http_post=post))
+        with pytest.raises(LLMError) as exc:
+            await interpreter.interpret("...")
+        assert exc.value.stage == "unparsable"
+
+    async def test_валідний_json_без_фільтрів_дає_None(self):
+        """Валідний, але порожній JSON ({}) — не помилка, а «нічого не впізнано»."""
+        post = fake_post(anthropic_response("{}"))
+        interpreter = LLMInterpreter(AnthropicProvider("k", "m", 1, http_post=post))
         assert await interpreter.interpret("...") is None
+
+    async def test_json_у_markdown_блоці_розбирається(self):
+        """Модель обгорнула JSON у ```json — усе одно розбираємо."""
+        raw = '```json\n{"country":"de","dr_min":30}\n```'
+        interpreter = LLMInterpreter(
+            AnthropicProvider("k", "m", 1, http_post=fake_post(anthropic_response(raw)))
+        )
+        query = await interpreter.interpret("...")
+        assert query.country is country_by_code("de")
+        assert query.dr_min == 30
+
+    async def test_json_серед_пояснень_із_зайвими_дужками(self):
+        """Пояснення зі сторонніми {дужками} навколо JSON не збиває розбір."""
+        raw = 'Ось {результат} для вас: {"country":"fr"}. Дякую!'
+        interpreter = LLMInterpreter(
+            AnthropicProvider("k", "m", 1, http_post=fake_post(anthropic_response(raw)))
+        )
+        query = await interpreter.interpret("...")
+        assert query.country is country_by_code("fr")
+
+
+class TestСтадіїЗбою:
+    """Кожна невдача має конкретну стадію в LLMError і зрозумілий лог/повідомлення."""
+
+    async def test_обрізана_відповідь_openai_це_truncated(self):
+        """finish_reason=length + порожній текст → стадія truncated (не «недоступний»)."""
+        post = fake_post(openai_response("", finish_reason="length"))
+        provider = OpenAIProvider("k", "m", 1, http_post=post)
+        with pytest.raises(LLMError) as exc:
+            await provider.complete("s", "u")
+        assert exc.value.stage == "truncated"
+        assert "LLM_MAX_TOKENS" in str(exc.value)  # підказка, що робити
+
+    async def test_обрізана_відповідь_anthropic_це_truncated(self):
+        post = fake_post(anthropic_response("", stop_reason="max_tokens"))
+        provider = AnthropicProvider("k", "m", 1, http_post=post)
+        with pytest.raises(LLMError) as exc:
+            await provider.complete("s", "u")
+        assert exc.value.stage == "truncated"
+
+    async def test_порожня_відповідь_це_empty(self):
+        """Порожній текст без ознаки обрізання → стадія empty."""
+        post = fake_post(openai_response("", finish_reason="stop"))
+        provider = OpenAIProvider("k", "m", 1, http_post=post)
+        with pytest.raises(LLMError) as exc:
+            await provider.complete("s", "u")
+        assert exc.value.stage == "empty"
+
+    async def test_обрізана_відповідь_логує_стадію_не_недоступний(self, caplog):
+        """Сервіс на обрізаній відповіді логує ERROR зі стадією truncated."""
+        import logging
+
+        post = fake_post(openai_response("", finish_reason="length"))
+        service = build_ai_service(ai_settings(llm_provider="openai"), http_post=post)
+        with caplog.at_level(logging.ERROR):
+            outcome = await service.interpret_with_reason(1, "Морди до 20 по Британії")
+        assert outcome.query is None
+        assert outcome.reason == "unparsable"  # для користувача — «не розібрав», не «недоступний»
+        assert "truncated" in caplog.text
+
+    async def test_нерозбірний_json_логує_сиру_відповідь(self, caplog):
+        """При невалідному JSON у лог іде перші символи того, що повернула модель."""
+        import logging
+
+        post = fake_post(anthropic_response("вибачте, поясню без JSON..."))
+        service = build_ai_service(ai_settings(), http_post=post)
+        with caplog.at_level(logging.ERROR):
+            outcome = await service.interpret_with_reason(1, "щось")
+        assert outcome.reason == "unparsable"
+        assert "вибачте, поясню" in caplog.text  # видно, що саме повернула модель
+
+    async def test_бойовий_max_tokens_із_запасом(self):
+        """У бойовому виклику max_tokens беремо з налаштувань (запас, не 512/16)."""
+        post = fake_post(openai_response('{"country":"de"}'))
+        service = build_ai_service(ai_settings(llm_provider="openai"), http_post=post)
+        await service.try_interpret(1, "німецькі")
+        assert post.calls[0]["body"]["max_completion_tokens"] >= 500
 
 
 class TestУзгодженняЗПарсером:
