@@ -90,24 +90,28 @@ CANCEL_PHRASES: dict[str, tuple[str, ...]] = {
     Dimension.LANGUAGE: ("будь-яка мова", "всі мови", "мова не важлива", "без урахування мови"),
     Dimension.TRAFFIC: ("будь-який трафік", "трафік не важливий", "трафік без обмежень"),
     Dimension.DR: ("будь-який dr", "dr не важливий", "др не важливий"),
-    Dimension.OUTLINKS: ("будь-які вихідні лінки", "вихідні лінки не важливі"),
-    Dimension.SPAM: ("будь-яка заспамленість", "заспамленість не важлива"),
+    # Слова про «вихідні» тепер теж ведуть на вимір заспамленості (стовпець G).
+    Dimension.SPAM: (
+        "будь-яка заспамленість",
+        "заспамленість не важлива",
+        "будь-які вихідні лінки",
+        "вихідні лінки не важливі",
+    ),
 }
 
-# Числові фільтри: (текст, вимір, очікуване значення). Усі чотири числові
-# виміри — щоб перехрестя покривало й заспамленість нарівні з DR і трафіком.
+# Числові фільтри: (текст, вимір, очікуване значення). «вихідні лінки» ведуть на
+# SPAM (стовпець G) — це синонім заспамленості.
 METRIC_FILTERS: tuple[tuple[str, str, float], ...] = (
     ("трафік від 50", Dimension.TRAFFIC, 50.0),
     ("др від 20", Dimension.DR, 20.0),
     ("dr від 30", Dimension.DR, 30.0),
-    ("вихідних лінків від 15", Dimension.OUTLINKS, 15.0),
+    ("вихідних лінків від 15", Dimension.SPAM, 15.0),
     ("заспамленість від 40", Dimension.SPAM, 40.0),
 )
 
 _VALUE_FIELD = {
     Dimension.TRAFFIC: "traffic_min",
     Dimension.DR: "dr_min",
-    Dimension.OUTLINKS: "outlinks_min",
     Dimension.SPAM: "spam_min",
 }
 
@@ -238,24 +242,31 @@ class TestНапрямПорогу:
 
 
 class TestЗамовчуванняНапрямку:
-    """Голе число: для заспамленості/вихідних — «до N», для DR/трафіку — «від N»."""
+    """Голе число: для заспамленості (й слів «вихідні») — «до N», для DR/трафіку — «від N»."""
 
     def test_заспамленість_голе_число_це_максимум(self):
         q = parse("Морди заспамленість 20").query
         assert (q.spam_min, q.spam_max) == (None, 20)
 
-    def test_вихідні_голе_число_це_максимум(self):
+    def test_вихідні_голе_число_це_заспамленість_максимум(self):
+        """«20 вихідних» = заспамленість ≤ 20 (стовпець G), F числом не чіпаємо."""
         q = parse("Морди 20 вихідних").query
-        assert (q.outlinks_min, q.outlinks_max) == (None, 20)
+        assert (q.spam_min, q.spam_max) == (None, 20)
 
-    def test_до_перед_вихідними(self):
+    def test_до_перед_вихідними_це_заспамленість(self):
         q = parse("Морди до 20 вихідних лінків").query
-        assert (q.outlinks_min, q.outlinks_max) == (None, 20)
+        assert (q.spam_min, q.spam_max) == (None, 20)
+
+    def test_вихідні_й_заспамленість_дають_однакове(self):
+        """«до 20 вихідних лінків» ≡ «заспамленість до 20» — обидва G ≤ 20."""
+        a = parse("Морди до 20 вихідних лінків").query
+        b = parse("Морди заспамленість до 20").query
+        assert (a.spam_min, a.spam_max) == (b.spam_min, b.spam_max) == (None, 20)
 
     def test_від_лишається_доступним(self):
-        """«від N» для заспамленості/вихідних працює — для відсіву найбрудніших."""
+        """«від N» для заспамленості (й «вихідні») працює — для відсіву найбрудніших."""
         assert parse("заспамленість від 80").query.spam_min == 80
-        assert parse("вихідних від 25").query.outlinks_min == 25
+        assert parse("вихідних від 25").query.spam_min == 25
 
     def test_трафік_і_dr_не_зачеплені(self):
         assert parse("трафік 100").query.traffic_min == 100
@@ -268,7 +279,8 @@ class TestЗамовчуванняНапрямку:
         assert parse("50 трафік").query.traffic_min is None
 
     def test_напрямок_у_рядку_запиту(self):
-        assert "вихідні ≤ 20" in parse("Морди 20 вихідних").query.describe()
+        # І «вихідні», і «заспамленість» показуються як заспамленість (стовпець G).
+        assert "заспамленість ≤ 20" in parse("Морди 20 вихідних").query.describe()
         assert "заспамленість ≤ 20" in parse("Морди заспамленість 20").query.describe()
         assert "заспамленість ≥ 80" in parse("заспамленість від 80").query.describe()
 
@@ -347,14 +359,13 @@ class TestМеханізм:
         assert len(dimensions) == len(set(dimensions))
 
     def test_усі_виміри_активні(self):
-        """Після підключення заспамленості вимкнених вимірів не лишилося."""
+        """Стовпця «вихідні» серед вимірів немає — якість фільтрується по SPAM."""
         assert active_dimensions() == {
             Dimension.COUNTRY,
             Dimension.LANGUAGE,
             Dimension.ZONE,
             Dimension.TRAFFIC,
             Dimension.DR,
-            Dimension.OUTLINKS,
             Dimension.SPAM,
         }
         assert all(spec.active for spec in SPECS)
@@ -377,16 +388,16 @@ class TestМеханізм:
         assert "німеччині" in remaining
 
     def test_вихідні_лінки_не_ламають_сусіда(self):
-        """Скасування вихідних лінків не чіпає сусідню метрику."""
+        """Скасування «вихідних лінків» (тепер це заспамленість) не чіпає сусіда."""
         parsed = parse("будь-які вихідні лінки трафік від 50")
         assert parsed.query.traffic_min == 50
-        assert Dimension.OUTLINKS in parsed.cancelled
+        assert Dimension.SPAM in parsed.cancelled
 
-    def test_вихідні_лінки_тепер_у_фільтрах(self):
-        """Вимір підключений — фраза скасування потрапляє в mentioned."""
+    def test_вихідні_лінки_ведуть_на_заспамленість(self):
+        """Слова «вихідні лінки» — це вимір заспамленості (стовпець G)."""
         parsed = parse("будь-які вихідні лінки")
-        assert Dimension.OUTLINKS in parsed.mentioned
-        assert Dimension.OUTLINKS in parsed.cancelled
+        assert Dimension.SPAM in parsed.mentioned
+        assert Dimension.SPAM in parsed.cancelled
 
 
 class TestНазвиВимірівУСловах:

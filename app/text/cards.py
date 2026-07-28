@@ -24,12 +24,11 @@ from app.analytics.recommendations import Recommendations, Suggestion
 # Назви відкинутих вимірів у формі після «по» — для попередження про те, що
 # фільтр не застосувався (база не має відповідних колонок).
 _UNSUPPORTED_LABEL: dict[str, str] = {
-    Dimension.OUTLINKS: "вихідних лінках",
     Dimension.SPAM: "заспамленості",
     Dimension.GEO: "гео",
 }
 # Сталий порядок переліку, щоб рядок не стрибав між показами.
-_UNSUPPORTED_ORDER = (Dimension.OUTLINKS, Dimension.SPAM, Dimension.GEO)
+_UNSUPPORTED_ORDER = (Dimension.SPAM, Dimension.GEO)
 
 
 def escape(text: str) -> str:

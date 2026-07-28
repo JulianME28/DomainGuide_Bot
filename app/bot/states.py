@@ -29,11 +29,9 @@ class Wizard(StatesGroup):
 
     traffic = State()
     dr = State()
-    outlinks = State()
-    """Крок «Вихідні лінки» — лише для баз із цією колонкою («Морди»)."""
-
     spam = State()
-    """Крок «Заспамленість» (у кількості заспамлених лінків) — лише «Морди»."""
+    """Крок «Заспамленість» (стовпець G) — лише «Морди». Стовпець F («вихідні»)
+    окремим кроком не фільтрується: він службовий (відсів мертвих сайтів)."""
 
     language = State()
     confirm = State()
@@ -86,8 +84,6 @@ def query_to_state(query: DonorQuery, fresh: frozenset[str] | None = None) -> di
         "dr_max": query.dr_max,
         "traffic_min": query.traffic_min,
         "traffic_max": query.traffic_max,
-        "outlinks_min": query.outlinks_min,
-        "outlinks_max": query.outlinks_max,
         "spam_min": query.spam_min,
         "spam_max": query.spam_max,
     }
@@ -110,8 +106,6 @@ def query_from_state(data: dict[str, Any], *, default_section: str = "magic") ->
         dr_max=data.get("dr_max"),
         traffic_min=data.get("traffic_min"),
         traffic_max=data.get("traffic_max"),
-        outlinks_min=data.get("outlinks_min"),
-        outlinks_max=data.get("outlinks_max"),
         spam_min=data.get("spam_min"),
         spam_max=data.get("spam_max"),
     )
@@ -179,15 +173,13 @@ def summary_lines(
     )
     lines.append(f"📈 <b>DR:</b> {limit(query.dr_min, query.dr_max)}{mark(Dimension.DR)}")
 
-    # Вихідні лінки й заспамленість — лише для баз, які мають ці колонки.
+    # Заспамленість (стовпець G) — лише для баз, що мають цю колонку. Стовпця F
+    # («вихідні») тут немає: числом він не фільтрується. Напрямок — знаком «≤»/«≥»,
+    # бо менше = краще (щоб «20» не сплутали з «від 20»).
     if tracks_spam:
         lines.append(
-            f"🔗 <b>Вихідні лінки:</b> "
-            f"{limit(query.outlinks_min, query.outlinks_max)}{mark(Dimension.OUTLINKS)}"
-        )
-        lines.append(
             f"🧪 <b>Заспамленість:</b> "
-            f"{limit(query.spam_min, query.spam_max)}{mark(Dimension.SPAM)}"
+            f"{_spam_limit(query.spam_min, query.spam_max)}{mark(Dimension.SPAM)}"
         )
 
     lines.append(f"🗣 <b>Мова:</b> {language}{mark(Dimension.LANGUAGE)}")
@@ -236,3 +228,16 @@ def _clean(value: float | None) -> str:
     if value is None:
         return "—"
     return str(int(value)) if float(value).is_integer() else str(value)
+
+
+def _spam_limit(minimum: float | None, maximum: float | None) -> str:
+    """Заспамленість у резюме майстра знаком «≤»/«≥» (менше = краще)."""
+    if minimum is None and maximum is None:
+        return "не важливо"
+    if maximum == 0 and minimum in (None, 0):
+        return "0 (тільки чисті, без мертвих)"
+    if minimum is None:
+        return f"≤ {_clean(maximum)}"
+    if maximum is None:
+        return f"≥ {_clean(minimum)}"
+    return f"{_clean(minimum)}–{_clean(maximum)}"

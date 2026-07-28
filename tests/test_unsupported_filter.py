@@ -37,10 +37,10 @@ class TestРозборПрикметника:
 
 class TestВідкинутіВиміри:
     async def test_перелік_відкинутих(self, magic):
-        """У «Меджику» немає спаму/вихідних — обидва в списку відкинутих."""
-        query = DonorQuery(section_key="magic", spam_max=0, outlinks_max=20)
+        """У «Меджику» немає заспамленості — вона в списку відкинутих."""
+        query = DonorQuery(section_key="magic", spam_max=0)
         dropped = unsupported_dimensions(magic, query)
-        assert dropped == {Dimension.SPAM, Dimension.OUTLINKS}
+        assert dropped == {Dimension.SPAM}
 
     async def test_результат_несе_відкинуті(self, magic):
         result = run_query(magic, DonorQuery(section_key="magic", spam_max=0))
@@ -83,13 +83,12 @@ class TestПопередженняВКартці:
         assert "у базі Меджик немає таких даних" in card
         assert "лише в базі Морди" in card
 
-    async def test_кілька_відкинутих_разом(self, magic):
+    async def test_відкинута_заспамленість_одним_рядком(self, magic):
         card = render_result(
-            run_query(magic, DonorQuery(section_key="magic", spam_max=0, outlinks_max=20)),
+            run_query(magic, DonorQuery(section_key="magic", spam_max=20)),
             dropped_alt_base="Морди",
         )
-        # Один рядок перелічує обидва виміри.
-        assert "вихідних лінках й заспамленості" in card
+        assert "заспамленості" in card
         assert card.count("не застосовано") == 1
 
     async def test_у_базі_з_виміром_попередження_немає(self, mordy):

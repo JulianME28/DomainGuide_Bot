@@ -22,16 +22,24 @@ from app.llm.provider import LLMProvider
 ALLOWED_SECTIONS = frozenset({"magic", "mordy"})
 
 # Числові поля-фільтри, які приймаємо від ШІ. Усе поза цим списком — ігнорується.
+# Стовпця «вихідні» (F) тут немає: якість фільтрується ЛИШЕ по заспамленості
+# (spam_*, стовпець G). Якщо модель усе ж поверне outlinks_*, ми зведемо їх до
+# spam_* нижче (це те саме — «вихідні» в запиті = заспамленість).
 ALLOWED_METRIC_FIELDS = (
     "dr_min",
     "dr_max",
     "traffic_min",
     "traffic_max",
-    "outlinks_min",
-    "outlinks_max",
     "spam_min",
     "spam_max",
 )
+
+# Синоніми полів: «вихідні» → заспамленість. Приймаємо на випадок, якщо модель
+# все ж використала стару назву — щоб не втратити фільтр і не порушити правило.
+_METRIC_ALIASES = {
+    "outlinks_min": "spam_min",
+    "outlinks_max": "spam_max",
+}
 
 SYSTEM_PROMPT = (
     "Ти перетворюєш запит користувача про SEO-донорів на структурний фільтр у "
@@ -44,7 +52,8 @@ SYSTEM_PROMPT = (
     '  "country": код однієї країни\n'
     '  "language": код мови\n'
     '  "dr_min","dr_max","traffic_min","traffic_max": невід\'ємні числа\n'
-    '  "outlinks_min","outlinks_max","spam_min","spam_max": числа (лише для mordy)\n\n'
+    '  "spam_min","spam_max": заспамленість, числа (лише для mordy). Це ЄДИНИЙ '
+    "фільтр якості: слова про «вихідні лінки» теж означають заспамленість.\n\n"
     "Використовуй ЛИШЕ коди з каталогу. Якщо чогось не зрозумів — не вигадуй, "
     "просто не додавай це поле. Якщо запит зовсім незрозумілий — поверни {}.\n"
 )
@@ -116,6 +125,12 @@ def interpret_json(payload: dict) -> DonorQuery | None:
         number = _coerce_number(payload.get(field))
         if number is not None:
             metrics[field] = number
+    # «вихідні» від моделі → заспамленість (той самий фільтр по стовпцю G). Явно
+    # заданий spam_* не перезаписуємо.
+    for alias, target in _METRIC_ALIASES.items():
+        number = _coerce_number(payload.get(alias))
+        if number is not None:
+            metrics.setdefault(target, number)
 
     is_multi = len(countries) >= 2
     query = DonorQuery(

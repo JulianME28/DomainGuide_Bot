@@ -435,7 +435,8 @@ def parse_free_text(text: str, *, default_section: str = "magic") -> ParsedQuery
         country = None
     dr_min, dr_max = limits(Dimension.DR)
     traffic_min, traffic_max = limits(Dimension.TRAFFIC)
-    outlinks_min, outlinks_max = limits(Dimension.OUTLINKS)
+    # Стовпець F («вихідні») числом не фільтрується: слова про вихідні лінки веде
+    # на вимір SPAM (стовпець G), тож окремих outlinks_* тут немає.
     spam_min, spam_max = limits(Dimension.SPAM)
     # Прикметникова заспамленість діє, лише коли числового фільтра немає.
     if (
@@ -478,8 +479,6 @@ def parse_free_text(text: str, *, default_section: str = "magic") -> ParsedQuery
             dr_max=dr_max,
             traffic_min=traffic_min,
             traffic_max=traffic_max,
-            outlinks_min=outlinks_min,
-            outlinks_max=outlinks_max,
             spam_min=spam_min,
             spam_max=spam_max,
         )
@@ -517,8 +516,6 @@ def parse_free_text(text: str, *, default_section: str = "magic") -> ParsedQuery
         dr_max=dr_max,
         traffic_min=traffic_min,
         traffic_max=traffic_max,
-        outlinks_min=outlinks_min,
-        outlinks_max=outlinks_max,
         spam_min=spam_min,
         spam_max=spam_max,
     )

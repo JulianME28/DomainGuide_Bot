@@ -304,15 +304,15 @@ def passes_metrics(donor: Donor, query: DonorQuery) -> bool:
     if not (
         _in_range(donor.dr, query.dr_min, query.dr_max)
         and _in_range(donor.traffic, query.traffic_min, query.traffic_max)
-        and _in_range(donor.outlinks, query.outlinks_min, query.outlinks_max)
         and _in_range(donor.spammed, query.spam_min, query.spam_max)
     ):
         return False
-    # «До N» по заспамленості/вихідних виключає МЕРТВІ сайти (0 вихідних): у цих
-    # стовпцях менше = краще, але непрацюючий сайт з 0 вихідних — це не «чистий»,
-    # а відсутній (як і в розподілі, де група «0,0» — найгірша). Тож «≤ N» — це
-    # 1..N, без нуля. «Від N» дохлих і так не пропускає (їхні значення нижчі).
-    if query.spam_max is not None or query.outlinks_max is not None:
+    # СЛУЖБОВА роль стовпця F («вихідні»): коли заданий БУДЬ-ЯКИЙ фільтр
+    # заспамленості (G), рядок проходить лише якщо вихідних > 0. Мертвий сайт
+    # (F=0) — не «чистий», а непрацюючий (дані не оновились), тож у якісний запит
+    # не входить (як і в розподілі, де група «0,0» — найгірша). Саме числом F
+    # НЕ фільтрується — тільки цей відсів нуля.
+    if query.spam_min is not None or query.spam_max is not None:
         return donor.outlinks is not None and donor.outlinks > 0
     return True
 
@@ -669,7 +669,7 @@ def normalize_query(dataset: Dataset, query: DonorQuery) -> DonorQuery:
         query = query.without(Dimension.GEO)
     if dataset.tracks_spam:
         return query
-    return query.without(Dimension.OUTLINKS).without(Dimension.SPAM)
+    return query.without(Dimension.SPAM)
 
 
 def unsupported_dimensions(dataset: Dataset, query: DonorQuery) -> frozenset[str]:
@@ -684,11 +684,8 @@ def unsupported_dimensions(dataset: Dataset, query: DonorQuery) -> frozenset[str
     dropped: set[str] = set()
     if not dataset.tracks_geo and Dimension.GEO in filled:
         dropped.add(Dimension.GEO)
-    if not dataset.tracks_spam:
-        if Dimension.SPAM in filled:
-            dropped.add(Dimension.SPAM)
-        if Dimension.OUTLINKS in filled:
-            dropped.add(Dimension.OUTLINKS)
+    if not dataset.tracks_spam and Dimension.SPAM in filled:
+        dropped.add(Dimension.SPAM)
     return frozenset(dropped)
 
 

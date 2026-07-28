@@ -16,8 +16,9 @@ import pytest
 
 from app.analytics.engine import aggregate, run_query, spam_distribution
 from app.analytics.query import Dimension, DonorQuery
-from app.data.models import Donor
+from app.data.models import Dataset, Donor
 from app.data.repository import build_donors
+from app.dictionary.countries import country_by_code
 from app.text.cards import percent, render_result
 from app.text.freeform import parse_free_text
 from tests.fixtures.fake_data import (
@@ -257,15 +258,7 @@ class TestСередніМорд:
 
 
 class TestФільтри:
-    async def test_фільтр_вихідних_максимум(self, mordy):
-        """До 10 вихідних = 1..10: uk1(10), m7(8) = 2. Мертвий m4(0) НЕ входить."""
-        result = run_query(mordy, mordy_query(outlinks_max=10))
-        assert result.core.count == 2
-
-    async def test_до_нуля_вихідних_нікого(self, mordy):
-        """«До 0 вихідних» = 1..0 = порожньо: 0 не входить (мертві сайти)."""
-        result = run_query(mordy, mordy_query(outlinks_max=0))
-        assert result.core.count == 0
+    """Якість фільтрується ЛИШЕ по стовпцю G (заспамленість). F — службовий (F>0)."""
 
     async def test_фільтр_заспамленості_максимум(self, mordy):
         """До 30 заспамлених: m1(10), m2(5), uk1(0), m7(4) = 4.
@@ -279,21 +272,86 @@ class TestФільтри:
         result = run_query(mordy, mordy_query(spam_min=50))
         assert result.core.count == 1
 
-    async def test_комбінація_вихідних_і_заспамленості(self, mordy):
-        """До 60 вихідних і до 30 заспамлених: m1,m2,uk1,m7 = 4 (glob 52 і мертвий m4 — ні)."""
-        result = run_query(mordy, mordy_query(outlinks_max=60, spam_max=30))
-        assert result.core.count == 4
+    async def test_вихідні_і_заспамленість_дають_однаковий_результат(self, mordy):
+        """«до 20 вихідних лінків» ≡ «заспамленість до 20» — обидва G ≤ 20."""
+        by_outlinks = parse_free_text("Морди до 20 вихідних лінків").query
+        by_spam = parse_free_text("Морди заспамленість до 20").query
+        assert (by_outlinks.spam_min, by_outlinks.spam_max) == (None, 20)
+        assert (by_spam.spam_min, by_spam.spam_max) == (None, 20)
+        assert run_query(mordy, by_outlinks).core.count == run_query(mordy, by_spam).core.count
 
-    async def test_фільтр_вихідних_на_меджику_ігнорується(self, magic):
+    async def test_F_ніколи_не_фільтрується_числом(self):
+        """Хоч би що написали про «вихідні», числа в outlinks_* не потрапляють."""
+        for text in ("Морди до 20 вихідних лінків", "Морди 5 вихідних", "Морди вихідних від 3"):
+            query = parse_free_text(text).query
+            assert not hasattr(query, "outlinks_min")
+            assert not hasattr(query, "outlinks_max")
+
+    async def test_мертвий_сайт_виключено_за_будь_якого_фільтра(self, mordy):
+        """m4 (F=0, G=0) не входить ні в «до N», ні в «від N», ні в «незаспамлені»."""
+        for query in (
+            mordy_query(spam_max=100),  # ≤100 — усе, крім мертвого й порожнього
+            mordy_query(spam_min=0),  # ≥0 — але мертвий усе одно ні (F=0)
+            mordy_query(spam_max=0),  # незаспамлені = G=0 при F>0
+        ):
+            result = run_query(mordy, query)
+            # Ідеально чистий uk1 (F=10, G=0) проходить, мертвий m4 — ні.
+            assert result.core.count >= 1
+        # Точна перевірка «незаспамлені»: лише uk1.
+        assert run_query(mordy, mordy_query(spam_max=0)).core.count == 1
+
+    def test_синтетичні_чистий_проходить_мертвий_ні(self):
+        clean = donor(outlinks=10, spammed=0)
+        dead = donor(outlinks=0, spammed=0)
+        spammy = donor(outlinks=20, spammed=5)
+        ds = Dataset("mordy", "Морди", "Морди", (clean, dead, spammy), 0.0, tracks_spam=True)
+        # ≤3: чистий (G=0) проходить, spammy (G=5) — ні, мертвий (F=0) — ні.
+        assert run_query(ds, mordy_query(spam_max=3)).core.count == 1
+
+    async def test_фільтр_заспамленості_на_меджику_ігнорується(self, magic):
         """У «Меджику» цих колонок немає — фільтр не має відсіяти геть усіх."""
-        result = run_query(magic, DonorQuery(section_key="magic", outlinks_max=50))
+        result = run_query(magic, DonorQuery(section_key="magic", spam_max=50))
         # normalize_query прибирає вимір, якого база не має → повна база.
         assert result.core.count == magic.count
-        assert result.query.outlinks_max is None
+        assert result.query.spam_max is None
+
+
+class TestПорядокМетрикаЗонаGEO:
+    """Алгоритм: спершу метрика (G≤N при F>0), тоді країновий водоспад (зона, потім GEO)."""
+
+    def _britain_dataset(self):
+        gb_zone_ok = donor(outlinks=10, spammed=5, zone=".co.uk")  # зона + G ок
+        gb_zone_bad = donor(outlinks=60, spammed=50, zone=".co.uk")  # зона, але G завелике
+        gb_geo_ok = donor(outlinks=8, spammed=3, zone=".de", geo_code="gb", geo_traffic=500)
+        gb_geo_bad = donor(outlinks=40, spammed=30, zone=".de", geo_code="gb", geo_traffic=500)
+        donors = (gb_zone_ok, gb_zone_bad, gb_geo_ok, gb_geo_bad)
+        return Dataset("mordy", "Морди", "Морди", donors, 0.0, tracks_spam=True, tracks_geo=True)
+
+    def test_зонова_складова_рахується_по_G(self):
+        """«Морди, Британія, до 20 вихідних»: у зоні лишається лише той, у кого G≤20."""
+        ds = self._britain_dataset()
+        query = DonorQuery(section_key="mordy", country=country_by_code("gb"), spam_max=20)
+        result = run_query(ds, query)
+        assert result.split.zone == 1  # gb_zone_ok; gb_zone_bad відсіявся по G
+        assert result.split.geo == 1  # gb_geo_ok; gb_geo_bad відсіявся по G
+        assert result.core.count == 2
+
+    def test_вихідні_й_заспамленість_однакові_на_країні(self):
+        """«до 20 вихідних» ≡ «заспамленість до 20» і в країновому запиті."""
+        ds = self._britain_dataset()
+        gb = country_by_code("gb")
+        by_out = DonorQuery(section_key="mordy", country=gb, spam_max=20)
+        assert run_query(ds, by_out).core.count == 2
+
+    def test_без_фільтра_усі_чотири(self):
+        """Без спам-фільтра — усі 4 британські донори (метрика нікого не ріже)."""
+        ds = self._britain_dataset()
+        query = DonorQuery(section_key="mordy", country=country_by_code("gb"))
+        assert run_query(ds, query).core.count == 4
 
 
 # ---------------------------------------------------------------------------
-# 7. Фрази скасування для нових вимірів
+# 7. Фрази скасування для нового виміру
 # ---------------------------------------------------------------------------
 
 
@@ -303,34 +361,26 @@ class TestФразиСкасування:
         [
             "будь-які вихідні лінки", "вихідних лінків будь-яка кількість",
             "без урахування вихідних лінків",
+            "заспамленість не важлива", "будь-яка заспамленість",
         ],
     )  # fmt: skip
-    def test_скасування_вихідних(self, text):
-        parsed = parse_free_text(text)
-        assert Dimension.OUTLINKS in parsed.cancelled
-        assert parsed.query.outlinks_min is None
-        assert parsed.query.outlinks_max is None
-
-    @pytest.mark.parametrize(
-        "text",
-        ["заспамленість не важлива", "будь-яка заспамленість", "без урахування заспамленості"],
-    )
-    def test_скасування_заспамленості(self, text):
+    def test_скасування_якості_знімає_заспамленість(self, text):
+        """І «вихідні», і «заспамленість» ведуть на скасування виміру SPAM (G)."""
         parsed = parse_free_text(text)
         assert Dimension.SPAM in parsed.cancelled
         assert parsed.query.spam_min is None
         assert parsed.query.spam_max is None
 
-    def test_фільтр_вихідних_вільним_текстом(self):
+    def test_фільтр_вихідних_вільним_текстом_це_заспамленість(self):
         parsed = parse_free_text("Морди, вихідних лінків до 50")
         assert parsed.query.section_key == "mordy"
-        assert parsed.query.outlinks_max == 50
+        assert parsed.query.spam_max == 50
 
     def test_скасування_вихідних_не_чіпає_трафік(self):
         """Той самий захист, що й для країни: скасування не з'їдає сусіда."""
         parsed = parse_free_text("будь-які вихідні лінки трафік від 100")
         assert parsed.query.traffic_min == 100
-        assert parsed.query.outlinks_min is None
+        assert parsed.query.spam_min is None
 
 
 # ---------------------------------------------------------------------------

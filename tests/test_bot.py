@@ -17,7 +17,6 @@ from app.bot.keyboards import (
     wizard_confirm,
     wizard_countries,
     wizard_dr,
-    wizard_outlinks,
     wizard_spam,
     wizard_traffic,
 )
@@ -484,32 +483,25 @@ class TestПідказкаПереплутаногоРежиму:
                 assert len(code.encode("utf-8")) <= 64
 
 
-class TestМайстерВихідніІСпам:
-    """Нові кроки майстра «Вихідні лінки» й «Заспамленість» — лише для баз,
-    які мають ці колонки («Морди»), і з тією ж механікою, що трафік/DR."""
+class TestМайстерЗаспамленість:
+    """Крок майстра «Заспамленість» (стовпець G) — лише для «Морд». Окремого
+    кроку «вихідні» немає: стовпець F числом не фільтрується."""
 
-    async def test_кроки_зявляються_для_мордів(self, services):
-        """Після DR «Морди» йдуть на крок вихідних лінків."""
+    async def test_крок_заспамленості_для_мордів(self, services):
+        """Після DR «Морди» йдуть одразу на крок заспамленості."""
         from app.bot.handlers.wizard import _after_dr
 
         state = FakeState({"section_key": "mordy"})
         await _after_dr(FakeMessage(), services, state)
-        assert state.current_state == Wizard.outlinks
+        assert state.current_state == Wizard.spam
 
-    async def test_кроків_немає_для_меджика(self, services):
-        """У «Меджика» цих колонок немає — після DR одразу резюме."""
+    async def test_кроку_немає_для_меджика(self, services):
+        """У «Меджика» цієї колонки немає — після DR одразу резюме."""
         from app.bot.handlers.wizard import _after_dr
 
         state = FakeState({"section_key": "magic"})
         await _after_dr(FakeMessage(), services, state)
         assert state.current_state == Wizard.confirm
-
-    async def test_після_вихідних_іде_заспамленість(self, services):
-        from app.bot.handlers.wizard import _after_outlinks
-
-        state = FakeState({"section_key": "mordy"})
-        await _after_outlinks(FakeMessage(), services, state)
-        assert state.current_state == Wizard.spam
 
 
 class TestМайстерGEO:
@@ -571,27 +563,22 @@ class TestМайстерGEO:
         assert "wizard:back:geo" in _callback_data(markup)
 
     async def test_обране_значення_потрапляє_у_фільтр(self, services):
-        """Кнопка «До 25» задає outlinks_max (менше = краще) і веде далі на спам."""
-        from app.bot.handlers.wizard import pick_outlinks, pick_spam
+        """Кнопка «До 5» задає spam_max (менше = краще) і веде до резюме."""
+        from app.bot.handlers.wizard import pick_spam
 
         state = FakeState({"section_key": "mordy"})
-        await pick_outlinks(FakeCallback("wizard:outlinks:25"), services, state)
-        assert state._data["outlinks_max"] == 25
-        assert state._data["outlinks_min"] is None
-        assert state.current_state == Wizard.spam
-
         await pick_spam(FakeCallback("wizard:spam:5"), services, state)
         assert state._data["spam_max"] == 5
         assert state._data["spam_min"] is None
         assert state.current_state == Wizard.confirm
 
     async def test_не_важливо_знімає_фільтр(self, services):
-        from app.bot.handlers.wizard import pick_outlinks
+        from app.bot.handlers.wizard import pick_spam
 
-        state = FakeState({"section_key": "mordy", "outlinks_max": 50})
-        await pick_outlinks(FakeCallback("wizard:outlinks:any"), services, state)
-        assert state._data["outlinks_min"] is None
-        assert state._data["outlinks_max"] is None
+        state = FakeState({"section_key": "mordy", "spam_max": 50})
+        await pick_spam(FakeCallback("wizard:spam:any"), services, state)
+        assert state._data["spam_min"] is None
+        assert state._data["spam_max"] is None
 
     async def test_текстом_теж_можна(self, services):
         """Число текстом на кроці працює так само, як кнопка — це «до N»."""
@@ -603,35 +590,33 @@ class TestМайстерGEO:
         assert state._data["spam_min"] is None
         assert state.current_state == Wizard.confirm
 
-    def test_обране_значення_в_резюме_морд(self):
-        query = DonorQuery(section_key="mordy", outlinks_max=25, spam_max=5)
+    def test_заспамленість_у_резюме_морд(self):
+        query = DonorQuery(section_key="mordy", spam_max=5)
         text = summary_lines(query, "Морди", tracks_spam=True)
-        assert "Вихідні лінки" in text and "до 25" in text
-        assert "Заспамленість" in text and "до 5" in text
+        assert "Заспамленість" in text and "≤ 5" in text
+        # Окремого рядка про «вихідні» немає — F не фільтрується.
+        assert "Вихідні лінки" not in text
 
-    def test_резюме_меджика_без_нових_рядків(self):
+    def test_резюме_меджика_без_рядка_заспамленості(self):
         query = DonorQuery(section_key="magic", dr_min=30)
         text = summary_lines(query, "Меджик", tracks_spam=False)
-        assert "Вихідні лінки" not in text
         assert "Заспамленість" not in text
 
-    async def test_прибрати_вихідні_працює(self, services):
-        """Кнопка «❌ Прибрати вихідні лінки» знімає лише цей фільтр."""
+    async def test_прибрати_заспамленість_працює(self, services):
+        """Кнопка «❌ Прибрати заспамленість» знімає лише цей фільтр."""
         from app.bot.handlers.wizard import drop_dimension
 
-        state = FakeState(
-            {"section_key": "mordy", "outlinks_max": 25, "spam_max": 5, FRESH_KEY: []}
-        )
-        await drop_dimension(FakeCallback("wizard:drop:outlinks"), services, state)
-        assert state._data["outlinks_max"] is None
-        assert state._data["spam_max"] == 5, "заспамленість чіпати не мали"
+        state = FakeState({"section_key": "mordy", "spam_max": 5, "dr_min": 30, FRESH_KEY: []})
+        await drop_dimension(FakeCallback("wizard:drop:spam"), services, state)
+        assert state._data["spam_max"] is None
+        assert state._data["dr_min"] == 30, "DR чіпати не мали"
 
     async def test_навігація_назад_не_ламає_стан(self, services):
         from app.bot.handlers.wizard import go_back
 
         state = FakeState({"section_key": "mordy"})
-        await go_back(FakeCallback("wizard:back:outlinks"), services, state)
-        assert state.current_state == Wizard.outlinks
+        await go_back(FakeCallback("wizard:back:spam"), services, state)
+        assert state.current_state == Wizard.spam
 
     async def test_резюме_морд_назад_веде_на_спам(self, services):
         """Останній крок перед резюме для «Морд» — заспамленість."""
@@ -644,7 +629,7 @@ class TestМайстерGEO:
         assert "wizard:back:spam" in _callback_data(markup)
 
     def test_нові_клавіатури_мають_навігацію_і_ліміт(self):
-        for keyboard in (wizard_outlinks(), wizard_spam()):
+        for keyboard in (wizard_spam(),):
             data = str(keyboard)
             assert "wizard:reset" in data, "має бути «Скинути»"
             assert "wizard:back" in data, "має бути «Назад»"

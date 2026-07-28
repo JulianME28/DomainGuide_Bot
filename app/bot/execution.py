@@ -86,8 +86,6 @@ def _supports_all(section, dimensions: frozenset[str]) -> bool:
     for dimension in dimensions:
         if dimension == Dimension.SPAM and not section.tracks_spam:
             return False
-        if dimension == Dimension.OUTLINKS and not section.has_outlinks:
-            return False
         if dimension == Dimension.GEO and not section.has_geo:
             return False
     return True

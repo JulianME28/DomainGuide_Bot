@@ -45,8 +45,11 @@ class Dimension(StrEnum):
     LANGUAGE = "language"
     TRAFFIC = "traffic"
     DR = "dr"
-    OUTLINKS = "outlinks"
     SPAM = "spam"
+    """Заспамленість = стовпець G (кількість заспамлених лінків). Це ЄДИНИЙ
+    якісний числовий фільтр «Морд»: сюди ведуть і слова «заспамленість», і слова
+    «вихідні лінки». Стовпець F («вихідні») числом не фільтрується — він лише
+    службовий відсів мертвих сайтів у двигуні (passes_metrics)."""
 
     GEO = "geo"
     """Фільтр по колонці GEO (країна ПОХОДЖЕННЯ ТРАФІКУ), незалежно від зони.
@@ -65,7 +68,6 @@ DIMENSION_ACCUSATIVE: dict[str, str] = {
     Dimension.LANGUAGE: "мову",
     Dimension.TRAFFIC: "трафік",
     Dimension.DR: "DR",
-    Dimension.OUTLINKS: "вихідні лінки",
     Dimension.SPAM: "заспамленість",
     Dimension.GEO: "гео",
     Dimension.ZONE: "зону",
@@ -113,15 +115,13 @@ class DonorQuery:
     traffic_min: float | None = None
     traffic_max: float | None = None
 
-    # Аналіз заспамленості — лише для «Морд».
-    outlinks_min: float | None = None
-    outlinks_max: float | None = None
-    """Фільтр по кількості вихідних лінків (штуки)."""
-
+    # Аналіз заспамленості — лише для «Морд». Стовпця F («вихідні») тут немає:
+    # він числом НЕ фільтрується, лише службово відсіює мертві сайти у двигуні.
     spam_min: float | None = None
     spam_max: float | None = None
-    """Фільтр по заспамленості в АБСОЛЮТНІЙ КІЛЬКОСТІ заспамлених лінків
-    (штуки), а не у відсотках. «Заспамленість до 40» = до 40 заспамлених."""
+    """Фільтр по заспамленості (стовпець G) в АБСОЛЮТНІЙ КІЛЬКОСТІ заспамлених
+    лінків (штуки), а не у відсотках. «Заспамленість до 40» = до 40 заспамлених.
+    Сюди ж ведуть слова «вихідні лінки» — це синонім заспамленості в запиті."""
 
     # -- вид запиту ----------------------------------------------------------
 
@@ -152,8 +152,6 @@ class DonorQuery:
                 self.dr_max,
                 self.traffic_min,
                 self.traffic_max,
-                self.outlinks_min,
-                self.outlinks_max,
                 self.spam_min,
                 self.spam_max,
             )
@@ -178,8 +176,6 @@ class DonorQuery:
             filled.add(Dimension.TRAFFIC)
         if self.dr_min is not None or self.dr_max is not None:
             filled.add(Dimension.DR)
-        if self.outlinks_min is not None or self.outlinks_max is not None:
-            filled.add(Dimension.OUTLINKS)
         if self.spam_min is not None or self.spam_max is not None:
             filled.add(Dimension.SPAM)
         if self.geo is not None:
@@ -213,8 +209,6 @@ class DonorQuery:
             return self.replace(traffic_min=None, traffic_max=None)
         if dimension == Dimension.DR:
             return self.replace(dr_min=None, dr_max=None)
-        if dimension == Dimension.OUTLINKS:
-            return self.replace(outlinks_min=None, outlinks_max=None)
         if dimension == Dimension.SPAM:
             return self.replace(spam_min=None, spam_max=None)
         if dimension == Dimension.GEO:
@@ -281,13 +275,11 @@ class DonorQuery:
         parts.append(_describe_range("трафік", self.traffic_min, self.traffic_max))
         parts.append(_describe_range("DR", self.dr_min, self.dr_max))
 
-        # Вихідні лінки й заспамленість згадуємо лише коли їх реально
-        # фільтрують — інакше вони засмічували б опис запитів до «Меджика»,
-        # де таких колонок немає.
-        # Заспамленість і вихідні: менше = краще, тож напрямок показуємо явно
-        # знаком «≤»/«≥», щоб «заспамленість 20» не сплутали з «від 20».
-        if self.outlinks_min is not None or self.outlinks_max is not None:
-            parts.append(_describe_bound("вихідні", self.outlinks_min, self.outlinks_max))
+        # Заспамленість (стовпець G) згадуємо лише коли її реально фільтрують —
+        # інакше вона засмічувала б опис запитів до «Меджика», де такої колонки
+        # немає. Менше = краще, тож напрямок показуємо явно знаком «≤»/«≥», щоб
+        # «заспамленість 20» не сплутали з «від 20». Слова «вихідні» в запиті теж
+        # ведуть сюди (це заспамленість), тож окремого рядка про F немає.
         if self.spam_min is not None or self.spam_max is not None:
             # «Незаспамлені» (заспамленість рівно 0) — це «ідеально чисті»: мертві
             # сайти з 0 вихідних сюди не входять. Кажемо про це прямо, бо «≤ 0»

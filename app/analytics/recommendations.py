@@ -297,8 +297,8 @@ def _relax_metrics(query: DonorQuery) -> tuple[DonorQuery, list[str]]:
     """Будує запит зі зниженими метричними порогами й описує, що саме знижено.
 
     Послаблення РОЗШИРЮЄ діапазон: нижній поріг («від») опускаємо, верхній
-    («до») піднімаємо. DR — на 10; трафік, вихідні лінки й заспамленість
-    (усі три — лічильники) — удвічі.
+    («до») піднімаємо. DR — на 10; трафік і заспамленість (обидва лічильники) —
+    удвічі. Стовпець «вихідні» (F) не фільтрується, тож послаблювати його нічого.
 
     Повертає (пом'якшений запит, список фраз «метрика від/до X замість Y»).
     Порожній список означає, що послаблювати не було чого — і рядка запасу
@@ -323,8 +323,6 @@ def _relax_metrics(query: DonorQuery) -> tuple[DonorQuery, list[str]]:
     loosen_max("dr_max", "DR", (query.dr_max or 0) + DR_RELAXATION)
     loosen_min("traffic_min", "трафік", (query.traffic_min or 0) / TRAFFIC_DIVIDER)
     loosen_max("traffic_max", "трафік", (query.traffic_max or 0) * TRAFFIC_DIVIDER)
-    loosen_min("outlinks_min", "вихідні лінки", (query.outlinks_min or 0) / TRAFFIC_DIVIDER)
-    loosen_max("outlinks_max", "вихідні лінки", (query.outlinks_max or 0) * TRAFFIC_DIVIDER)
     loosen_min("spam_min", "заспамленість", (query.spam_min or 0) / TRAFFIC_DIVIDER)
     loosen_max("spam_max", "заспамленість", (query.spam_max or 0) * TRAFFIC_DIVIDER)
 

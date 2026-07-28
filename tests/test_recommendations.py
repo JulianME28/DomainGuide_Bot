@@ -146,19 +146,19 @@ class TestЯдроІЗапас:
     async def test_без_країни_запасу_немає(self, magic):
         assert reserve_group(magic, DonorQuery(section_key="magic", dr_min=30)) is None
 
-    async def test_морди_послаблення_їхніх_метрик(self, mordy):
-        """Для «Морд» послаблення враховує вихідні лінки й заспамленість.
+    async def test_морди_послаблення_заспамленості(self, mordy):
+        """Для «Морд» послаблення знижує поріг заспамленості (стовпець G).
 
-        Німеччина трикроково = m1,m4,m7 (зона) + m2 (GEO de). Вихідні ≤10 = 1..10
-        лишає ядро m7(8); мертвий m4(0) НЕ входить. Послаблюємо до ≤20 →
-        додаються m1(16, зона) і m2(20, GEO).
+        Німеччина трикроково = m1,m4,m7 (зона) + m2 (GEO de). Заспамленість ≤5
+        (при F>0) лишає ядро m7(spam4) і m2(spam5); мертвий m4(F=0) не входить,
+        m1(spam10) — теж ні. Послаблюємо до ≤10 → додається m1.
         """
-        query = DonorQuery(section_key="mordy", country=country_by_code("de"), outlinks_max=10)
+        query = DonorQuery(section_key="mordy", country=country_by_code("de"), spam_max=5)
         group = reserve_group(mordy, query)
         assert group is not None
-        assert group.core_count == 1  # лише m7(8); мертвий m4(0) виключено
-        assert group.reserve_count == 2  # m1(16, зона) і m2(20, GEO): не ≤10, але ≤20
-        assert "вихідні лінки до 20 замість 10" in group.reserve_label
+        assert group.core_count == 2  # m7(spam4), m2(spam5); мертвий m4 виключено
+        assert group.reserve_count == 1  # m1(spam10): не ≤5, але ≤10
+        assert "заспамленість до 10 замість 5" in group.reserve_label
 
 
 class TestАналізДефіциту:
