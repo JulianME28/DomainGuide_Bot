@@ -103,23 +103,41 @@ def _zeros_note(zeros: int) -> str:
     return f" <i>(з яких =0 — {zeros})</i>" if zeros else ""
 
 
-def _spam_distribution_line(distribution: tuple[tuple[str, int], ...]) -> str:
-    """Рядок розподілу заспамленості: «12 (0), 26 (1-20), 45 (21-50)…».
+def _groups_text(distribution: tuple[tuple[str, int], ...]) -> str:
+    """Групи розподілу одним рядком: «26 (0), 266 (1-20)». Нульові вже прибрані."""
+    return ", ".join(f"{number(count)} ({label})" for label, count in distribution)
 
-    Перше число — скільки донорів у групі, у дужках — діапазон заспамлених
-    лінків. Це РОЗПОДІЛ (а не середнє), тому й підпис інший."""
-    if not distribution:
+
+def _spam_distribution_line(
+    within: tuple[tuple[str, int], ...],
+    beyond: tuple[tuple[str, int], ...] = (),
+) -> str:
+    """Рядок розподілу заспамленості. Перше число — скільки донорів у групі,
+    у дужках — діапазон заспамлених лінків (це РОЗПОДІЛ, не середнє).
+
+    Коли є фільтр заспамленості, `within` — групи в межах порога (ядро), а
+    `beyond` — розподіл РЕШТИ (хто за порогом): «… | за порогом: …». Без фільтра
+    `beyond` порожній — показуємо повний розподіл, як раніше."""
+    if not within and not beyond:
         return "🧪 <b>Заспамленість:</b> <i>немає даних</i>"
-    parts = ", ".join(f"{number(count)} ({label})" for label, count in distribution)
-    return f"🧪 <b>Заспамленість:</b> {parts}"
+    line = f"🧪 <b>Заспамленість:</b> {_groups_text(within)}"
+    if beyond:
+        line += f" | <b>за порогом:</b> {_groups_text(beyond)}"
+    return line
 
 
-def _metrics_block(core: Aggregate, *, tracks_spam: bool = False) -> list[str]:
+def _metrics_block(
+    core: Aggregate,
+    *,
+    tracks_spam: bool = False,
+    spam_beyond: tuple[tuple[str, int], ...] = (),
+) -> list[str]:
     """Рядки з показниками групи.
 
     Біля кожного середнього — приписка про нулі, коли вони є. Для «Морд»
     (tracks_spam=True) додаються вихідні лінки й РОЗПОДІЛ заспамленості за
-    абсолютною кількістю. Для «Меджика» спам/вихідних немає.
+    абсолютною кількістю. `spam_beyond` — розподіл решти (за порогом), якщо є
+    фільтр. Для «Меджика» спам/вихідних немає.
     """
     lines = [
         f"📊 <b>Середній DR:</b> {number(core.avg_dr)}{_zeros_note(core.dr_zeros)}",
@@ -134,7 +152,7 @@ def _metrics_block(core: Aggregate, *, tracks_spam: bool = False) -> list[str]:
             f"🔗 <b>Середня к-сть вихідних лінків:</b> "
             f"{number(core.avg_outlinks)}{_zeros_note(core.outlinks_zeros)}"
         )
-        lines.append(_spam_distribution_line(core.spam_distribution))
+        lines.append(_spam_distribution_line(core.spam_distribution, spam_beyond))
 
     return lines
 
@@ -303,7 +321,9 @@ def render_result(
 
     if core.count:
         lines.append("")
-        lines.extend(_metrics_block(core, tracks_spam=result.tracks_spam))
+        lines.extend(
+            _metrics_block(core, tracks_spam=result.tracks_spam, spam_beyond=result.spam_beyond)
+        )
     else:
         lines.append("")
         lines.append("За цими параметрами донорів не знайдено.")
@@ -487,9 +507,16 @@ def render_recommendations(recommendations: Recommendations) -> str:
 
     if recommendations.reserve is not None:
         reserve = recommendations.reserve
+        # Для запасу «за порогом заспамленості» — перелік груп решти; для інших
+        # послаблень (DR/трафік) — просто підпис, як раніше.
+        tail = (
+            f"{escape(reserve.reserve_label)}: {_groups_text(reserve.distribution)}"
+            if reserve.distribution
+            else escape(reserve.reserve_label)
+        )
         blocks.append(
             f"➕ <b>Ядро + запас:</b> {reserve.core_count} точно за запитом "
-            f"і ще {reserve.reserve_count} {escape(reserve.reserve_label)}. "
+            f"і ще {reserve.reserve_count} {tail}. "
             f"Разом до {reserve.total}."
         )
 
@@ -532,7 +559,9 @@ def render_compact_block(result: QueryResult, *, dropped_alt_base: str | None = 
         lines.append(unsupported)
 
     if core.count:
-        lines.extend(_metrics_block(core, tracks_spam=result.tracks_spam))
+        lines.extend(
+            _metrics_block(core, tracks_spam=result.tracks_spam, spam_beyond=result.spam_beyond)
+        )
         lines.append(_error_note(core))
     else:
         lines.append("<i>За цими параметрами донорів не знайдено.</i>")

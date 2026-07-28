@@ -39,6 +39,7 @@ from app.analytics.engine import (
     passes_metrics,
     passes_result,
     result_count,
+    spam_beyond,
 )
 from app.analytics.query import DonorQuery, QueryKind
 from app.data.models import Dataset
@@ -70,6 +71,10 @@ class ReserveGroup:
     core_count: int
     reserve_count: int
     reserve_label: str
+
+    distribution: tuple[tuple[str, int], ...] = ()
+    """Розподіл запасу по групах заспамленості — лише коли запас це «за порогом
+    заспамленості». Дає рядок «…: 59 (21-50), 36 (51-100)…»."""
 
     @property
     def total(self) -> int:
@@ -348,6 +353,20 @@ def reserve_group(dataset: Dataset, query: DonorQuery) -> ReserveGroup | None:
     country = query.country
     if country is None or query.kind is not QueryKind.COUNTRY:
         return None
+
+    # Фільтр заспамленості: запас = донори тієї ж країни, що ЗА порогом (G > N),
+    # з розподілом по групах. Послаблюємо ЛИШЕ поріг заспамленості (не DR/трафік),
+    # без подвійного рахунку з ядром і мовними рядками (той самий водоспад).
+    if query.spam_max is not None and dataset.tracks_spam:
+        reserve_count, distribution = spam_beyond(dataset, query)
+        if reserve_count == 0:
+            return None
+        return ReserveGroup(
+            core_count=result_count(dataset, query),
+            reserve_count=reserve_count,
+            reserve_label="з пониженими вимогами",
+            distribution=distribution,
+        )
 
     softer, relaxations = _relax_metrics(query)
     if not relaxations:

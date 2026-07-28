@@ -147,18 +147,36 @@ class TestЯдроІЗапас:
         assert reserve_group(magic, DonorQuery(section_key="magic", dr_min=30)) is None
 
     async def test_морди_послаблення_заспамленості(self, mordy):
-        """Для «Морд» послаблення знижує поріг заспамленості (стовпець G).
+        """Для «Морд» запас = донори тієї ж країни ЗА порогом заспамленості (G > N).
 
         Німеччина трикроково = m1,m4,m7 (зона) + m2 (GEO de). Заспамленість ≤5
         (при F>0) лишає ядро m7(spam4) і m2(spam5); мертвий m4(F=0) не входить,
-        m1(spam10) — теж ні. Послаблюємо до ≤10 → додається m1.
+        m1(spam10) — теж ні. Запас = решта Німеччини за порогом: m1(spam10).
         """
         query = DonorQuery(section_key="mordy", country=country_by_code("de"), spam_max=5)
         group = reserve_group(mordy, query)
         assert group is not None
         assert group.core_count == 2  # m7(spam4), m2(spam5); мертвий m4 виключено
-        assert group.reserve_count == 1  # m1(spam10): не ≤5, але ≤10
-        assert "заспамленість до 10 замість 5" in group.reserve_label
+        assert group.reserve_count == 1  # m1(spam10): за порогом ≤5
+        assert group.reserve_label == "з пониженими вимогами"
+        # Розподіл запасу по групах: m1(spam10) потрапляє в «1-20».
+        assert group.distribution == (("1-20", 1),)
+
+    async def test_картка_запасу_показує_розподіл(self, mordy):
+        """У картці рядок «Ядро + запас» перелічує групи решти за порогом."""
+        from app.text.cards import render_recommendations
+
+        query = DonorQuery(section_key="mordy", country=country_by_code("de"), spam_max=5)
+        card = render_recommendations(build_recommendations(mordy, query))
+        assert "Ядро + запас:" in card
+        assert "з пониженими вимогами: 1 (1-20)" in card
+        assert "Разом до 3" in card  # 2 ядро + 1 запас
+
+    async def test_запасу_немає_коли_за_порогом_порожньо(self, mordy):
+        """Якщо за порогом нікого — рядка «Ядро + запас» немає взагалі."""
+        # spam_max=1000 — уся Британія в межах, за порогом порожньо.
+        query = DonorQuery(section_key="mordy", country=country_by_code("de"), spam_max=1000)
+        assert reserve_group(mordy, query) is None
 
 
 class TestАналізДефіциту:

@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.analytics.engine import aggregate, run_query, spam_distribution
+from app.analytics.engine import aggregate, run_query, spam_beyond, spam_distribution
 from app.analytics.query import Dimension, DonorQuery
 from app.data.models import Dataset, Donor
 from app.data.repository import build_donors
@@ -348,6 +348,110 @@ class TestПорядокМетрикаЗонаGEO:
         ds = self._britain_dataset()
         query = DonorQuery(section_key="mordy", country=country_by_code("gb"))
         assert run_query(ds, query).core.count == 4
+
+
+# ---------------------------------------------------------------------------
+# 6b. «За порогом»: розподіл РЕШТИ при фільтрі заспамленості
+# ---------------------------------------------------------------------------
+
+
+def _britain_spread() -> Dataset:
+    """Британія з розкидом заспамленості по всіх групах — для «за порогом».
+
+    Усі в зоні .co.uk (зоновий крок Британії). У межах порога ≤20:
+    2×G0 (група «0») і 3×G10 (група «1-20»). За порогом >20: 4×G30 (21-50),
+    2×G60 (51-100), 1×G150 (100+). Плюс сторонній .de-донор — не Британія.
+    """
+    core = [donor(outlinks=50, spammed=0, zone=".co.uk") for _ in range(2)]
+    core += [donor(outlinks=50, spammed=10, zone=".co.uk") for _ in range(3)]
+    beyond = [donor(outlinks=50, spammed=30, zone=".co.uk") for _ in range(4)]
+    beyond += [donor(outlinks=100, spammed=60, zone=".co.uk") for _ in range(2)]
+    beyond += [donor(outlinks=200, spammed=150, zone=".co.uk") for _ in range(1)]
+    other = [donor(outlinks=50, spammed=200, zone=".de")]  # не Британія
+    donors = tuple(core + beyond + other)
+    return Dataset("mordy", "Морди", "Морди", donors, 0.0, tracks_spam=True, tracks_geo=True)
+
+
+class TestРозподілЗаПорогом:
+    """spam_beyond: донори тієї ж країни, що ЗА порогом заспамленості (G > N)."""
+
+    def _britain_query(self, **kw):
+        return DonorQuery(section_key="mordy", country=country_by_code("gb"), **kw)
+
+    def test_кількість_і_розподіл_решти(self):
+        ds = _britain_spread()
+        count, dist = spam_beyond(ds, self._britain_query(spam_max=20))
+        assert count == 7  # 4 + 2 + 1
+        assert dist == (("21-50", 4), ("51-100", 2), ("100+", 1))
+
+    def test_чужа_країна_не_входить(self):
+        """Сторонній .de-донор (G=200) у британську «решту» не потрапляє."""
+        ds = _britain_spread()
+        count, _ = spam_beyond(ds, self._britain_query(spam_max=20))
+        assert count == 7  # без .de-донора було б 8
+
+    def test_без_фільтра_решти_немає(self):
+        ds = _britain_spread()
+        assert spam_beyond(ds, self._britain_query()) == (0, ())
+
+    def test_база_без_заспамленості_решти_немає(self, magic):
+        assert spam_beyond(magic, DonorQuery(section_key="magic", spam_max=20)) == (0, ())
+
+    @pytest.mark.parametrize(
+        ("spam_max", "expect_core_group", "expect_beyond_first"),
+        [
+            (20, ("1-20", 3), ("21-50", 4)),  # межа 20|21
+            (50, ("21-50", 4), ("51-100", 2)),  # межа 50|51
+            (100, ("51-100", 2), ("100+", 1)),  # межа 100|101
+        ],
+    )  # fmt: skip
+    def test_межа_ядро_решта(self, spam_max, expect_core_group, expect_beyond_first):
+        """На кожній межі ядро (≤N) і решта (>N) рівно доповнюють одне одного."""
+        ds = _britain_spread()
+        core = run_query(ds, self._britain_query(spam_max=spam_max))
+        assert expect_core_group in core.core.spam_distribution
+        _, beyond = spam_beyond(ds, self._britain_query(spam_max=spam_max))
+        assert beyond[0] == expect_beyond_first
+
+    def test_немає_подвійного_рахунку(self):
+        """Ядро (≤N) і решта (>N) не перетинаються: сума = уся Британія."""
+        ds = _britain_spread()
+        core = run_query(ds, self._britain_query(spam_max=20)).core.count
+        beyond, _ = spam_beyond(ds, self._britain_query(spam_max=20))
+        whole = run_query(ds, self._britain_query()).core.count
+        assert core + beyond == whole
+
+
+class TestКарткаЗаПорогом:
+    """У картці рядок заспамленості ділиться на «в межах» і «за порогом»."""
+
+    async def test_рядок_ділиться_на_межі_і_за_порогом(self):
+        ds = _britain_spread()
+        query = DonorQuery(section_key="mordy", country=country_by_code("gb"), spam_max=20)
+        card = render_result(run_query(ds, query))
+        assert "за порогом:" in card
+        # У межах — групи «0» і «1-20»; за порогом — 21-50, 51-100, 100+.
+        assert "2 (0)" in card and "3 (1-20)" in card
+        assert "4 (21-50)" in card and "2 (51-100)" in card and "1 (100+)" in card
+
+    async def test_нульові_групи_приховані_за_порогом(self):
+        """Групи з нулем донорів у рядку «за порогом» не показуються."""
+        # Лише одна група за порогом (21-50) — решти бути не має.
+        core = [donor(outlinks=50, spammed=5, zone=".co.uk")]
+        beyond = [donor(outlinks=50, spammed=30, zone=".co.uk")]
+        ds = Dataset(
+            "mordy", "Морди", "Морди", tuple(core + beyond), 0.0, tracks_spam=True, tracks_geo=True
+        )
+        query = DonorQuery(section_key="mordy", country=country_by_code("gb"), spam_max=20)
+        card = render_result(run_query(ds, query))
+        assert "за порогом:" in card
+        assert "(51-100)" not in card and "(100+)" not in card
+
+    async def test_без_фільтра_повний_розподіл_без_за_порогом(self, mordy):
+        """Без спам-фільтра — рядок як раніше, без «за порогом»."""
+        card = render_result(run_query(mordy, mordy_query()))
+        assert "Заспамленість:" in card
+        assert "за порогом:" not in card
 
 
 # ---------------------------------------------------------------------------

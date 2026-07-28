@@ -224,6 +224,11 @@ class QueryResult:
     tracks_spam: bool = False
     """Чи показувати в картці вихідні лінки й заспамленість (лише «Морди»)."""
 
+    spam_beyond: tuple[tuple[str, int], ...] = ()
+    """Розподіл донорів тієї ж країни, що ЗА порогом заспамленості (G > spam_max),
+    по тих самих групах. Порожній, якщо фільтра заспамленості немає. Дає рядок
+    «за порогом: …», щоб було видно, кого відсічено й чи варто розширити."""
+
     dropped_dimensions: frozenset[str] = frozenset()
     """Виміри, фільтр по яких запит мав, а база не має відповідних колонок —
     тому фільтр мовчки НЕ застосувався. Картка попереджає про це, щоб число не
@@ -562,6 +567,32 @@ def spam_distribution(donors: list[Donor]) -> tuple[tuple[str, int], ...]:
     return tuple((label, counts[label]) for label, _low, _high in SPAM_GROUPS if counts[label])
 
 
+def _country_total_donors(dataset: Dataset, query: DonorQuery) -> list[Donor]:
+    """Донори, що входять у ПІДСУМОК запиту: зона+GEO (+ мова-на-нейтральних для
+    однозначних мов) для країни, звичайне ядро — для решти. Метрики застосовані."""
+    if query.kind is QueryKind.COUNTRY and query.country is not None:
+        zone_d, lang_global_d, geo_d, _ = classify_country(dataset, query)
+        widespread = _is_widespread(query.country)
+        return zone_d + geo_d + ([] if widespread else lang_global_d)
+    return select_core(dataset, query)
+
+
+def spam_beyond(dataset: Dataset, query: DonorQuery) -> tuple[int, tuple[tuple[str, int], ...]]:
+    """Донори ЗА порогом заспамленості (G > spam_max) — той самий водоспад.
+
+    Повертає (кількість, розподіл по групах). Порожньо, коли фільтра «≤ N» немає
+    або база не має заспамленості. Це «решта», яку відсіяв поріг: F > 0
+    гарантовано (G > N ≥ 0 ⇒ F ≥ G > 0), мертві сайти сюди не входять. Той самий
+    набір бачать і рядок «за порогом», і рядок «Ядро + запас» — тож без розбіжностей."""
+    if query.spam_max is None or not dataset.tracks_spam:
+        return 0, ()
+    # G > spam_max ⟺ spammed ≥ floor(spam_max)+1. Так ядро (≤N) і решта (>N)
+    # рівно доповнюють одне одного для цілих лічильників, без зазору й перетину.
+    beyond_query = query.replace(spam_min=int(query.spam_max) + 1, spam_max=None)
+    donors = _country_total_donors(dataset, beyond_query)
+    return len(donors), spam_distribution(donors)
+
+
 def aggregate(donors: list[Donor]) -> Aggregate:
     """Рахує кількість, середні й розподіли по групі донорів.
 
@@ -736,6 +767,10 @@ def run_query(dataset: Dataset, query: DonorQuery, *, with_breakdowns: bool = Tr
     else:
         core_donors = select_core(dataset, query)
 
+    # Розподіл РЕШТИ (хто за порогом заспамленості) — щоб було видно, кого
+    # відсічено. Порожній, коли фільтра «≤ N» немає.
+    _, spam_beyond_dist = spam_beyond(dataset, query)
+
     return QueryResult(
         section_title=dataset.title,
         query=query,
@@ -748,6 +783,7 @@ def run_query(dataset: Dataset, query: DonorQuery, *, with_breakdowns: bool = Tr
         country_breakdown=country_breakdown(core_donors) if with_breakdowns else (),
         total_in_base=dataset.count,
         tracks_spam=dataset.tracks_spam,
+        spam_beyond=spam_beyond_dist,
         dropped_dimensions=dropped,
         stale=dataset.stale,
         as_of=dataset.loaded_at if dataset.stale else None,
