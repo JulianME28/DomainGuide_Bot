@@ -223,14 +223,27 @@ class TestУзгодженняЗПарсером:
         assert query.dr_min == 50
         assert query.dr_max is None
 
-    async def test_незаспамлені_це_низька_заспамленість(self):
-        """«незаспамлені» → spam_max=0 — рівно як у парсері."""
-        dict_query = parse_free_text("незаспамлені Морди").query
-        ai_query = await self._interpreter('{"section":"mordy","spam_max":0}').interpret(
-            "незаспамлені Морди"
+    async def test_незаспамлені_без_числа_без_порога(self):
+        """«незаспамлені» БЕЗ конкретного числа — ШІ не вигадує поріг: лише країна.
+
+        Модель за оновленою інструкцією не повертає spam_* — «незаспамлений» для
+        кожного означає різне, поріг ставимо тільки на конкретне число. Розподіл
+        заспамленості бот покаже сам під результатом.
+        """
+        interpreter = self._interpreter('{"section":"mordy","country":"gb"}')
+        query = await interpreter.interpret("незаспамлені Морди по Британії")
+        assert query is not None
+        assert query.section_key == "mordy"
+        assert query.country is country_by_code("gb")
+        assert query.spam_min is None
+        assert query.spam_max is None
+
+    async def test_незаспамлені_з_числом_ставить_поріг(self):
+        """«незаспамлені до 20» — тут число Є, тож поріг ставимо (spam_max=20)."""
+        query = await self._interpreter('{"section":"mordy","spam_max":20}').interpret(
+            "незаспамлені Морди до 20"
         )
-        assert ai_query.spam_max == 0
-        assert ai_query.spam_max == dict_query.spam_max
+        assert (query.spam_min, query.spam_max) == (None, 20)
 
     def test_легасі_вихідні_від_моделі_зводяться_до_заспамленості(self):
         """Захисна сітка: навіть якщо модель поверне старе outlinks_max — це spam."""
@@ -257,6 +270,15 @@ class TestПромтБезПоляВихідних:
         assert "spam_max" in SYSTEM_PROMPT
         assert "traffic_min" in SYSTEM_PROMPT
         assert "dr_min" in SYSTEM_PROMPT
+
+    def test_промт_не_ставить_поріг_на_голе_незаспамлені(self):
+        """Промт більше не каже ставити spam_max=0 на «незаспамлені» без числа."""
+        assert '{"spam_max": 0}' not in SYSTEM_PROMPT
+        lowered = SYSTEM_PROMPT.lower()
+        assert "незаспамлені" in lowered
+        # Явно сказано не ставити поріг без конкретного числа.
+        assert "конкретне число" in lowered
+        assert "не став" in lowered
 
 
 class TestСервіс:
