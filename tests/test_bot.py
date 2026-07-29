@@ -754,23 +754,28 @@ class TestІндивідуальнийЗапит:
         from app.bot.handlers.ai import receive_ai_query
 
         services = self._services(repository, columns_config, SpyAI(None))
-        message = FakeMessage(text="абракадабра")
+        message = FakeMessage(text="абракадабра")  # не розбирає й словник
         await receive_ai_query(message, services, FakeState({}))
 
         shown = [e[0] for sent in message.sents for e in sent.edits] + [
             a[0] for a in message.answers
         ]
-        assert any("не зміг" in t for t in shown)
+        # SpyAI(None) → reason=unavailable → тепер власний текст «тимчасово недоступний».
+        assert any("недоступний" in t for t in shown)
 
     async def test_нерозбірна_відповідь_окреме_повідомлення(self, repository, columns_config):
         """Нерозбірний/обрізаний JSON → «не вдалося розібрати», не «недоступний»."""
         from app.bot.handlers.ai import receive_ai_query
 
         services = self._services(repository, columns_config, SpyAI(None, reason="unparsable"))
-        message = FakeMessage(text="Морди до 20 по Британії")
+        # Текст, який НЕ розбирає й словник, — щоб дійти до повідомлення про причину
+        # (розбірний словником запит тепер коректно падає в словник, а не в текст).
+        message = FakeMessage(text="абракадабра")
         await receive_ai_query(message, services, FakeState({}))
 
-        shown = [e[0] for sent in message.sents for e in sent.edits]
+        shown = [e[0] for sent in message.sents for e in sent.edits] + [
+            a[0] for a in message.answers
+        ]
         assert any("не вдалося розібрати" in t.lower() for t in shown)
 
     async def test_порожній_фільтр_окреме_повідомлення(self, repository, columns_config):
@@ -778,10 +783,12 @@ class TestІндивідуальнийЗапит:
         from app.bot.handlers.ai import receive_ai_query
 
         services = self._services(repository, columns_config, SpyAI(None, reason="empty"))
-        message = FakeMessage(text="абракадабра")
+        message = FakeMessage(text="абракадабра")  # не розбирає й словник
         await receive_ai_query(message, services, FakeState({}))
 
-        shown = [e[0] for sent in message.sents for e in sent.edits]
+        shown = [e[0] for sent in message.sents for e in sent.edits] + [
+            a[0] for a in message.answers
+        ]
         assert any("відфільтрувати" in t for t in shown)
 
     async def test_ручний_виклик_рахується_лічильником(self, repository, columns_config):

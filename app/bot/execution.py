@@ -41,6 +41,7 @@ from app.text.cards import (
     render_result,
     render_summary,
 )
+from app.text.freeform import parse_free_text
 
 logger = get_logger(__name__)
 
@@ -302,6 +303,18 @@ AI_FAILED_TEXT = (
     "трохи згодом або скористайтеся кнопками меню — /start."
 )
 
+# Вичерпано ліміт викликів ШІ (окремий від загального ліміту бота, ТЗ §11).
+AI_LIMIT_TEXT = (
+    "🧠 <b>Ліміт запитів до ШІ вичерпано.</b>\n\n"
+    "Спробуйте за годину або скористайтеся звичайним запитом чи кнопками меню — /start."
+)
+
+# ШІ недоступний: мережа, порожня чи дивна відповідь провайдера.
+AI_UNAVAILABLE_TEXT = (
+    "🧠 <b>ШІ тимчасово недоступний.</b>\n\n"
+    "Спробуйте трохи згодом або скористайтеся звичайним запитом чи кнопками меню — /start."
+)
+
 # ШІ відповів, але не у форматі, який бот може застосувати (нерозбірний JSON або
 # відповідь обірвалася на ліміті токенів) — кажемо це чесно, не «недоступний».
 AI_UNPARSABLE_TEXT = (
@@ -320,11 +333,59 @@ AI_EMPTY_TEXT = (
 
 AI_STATUS_TEXT = "🧠 Питаю ШІ..."
 
-# Причина невдачі ШІ (AIOutcome.reason) → повідомлення користувачу.
+# Причина невдачі ШІ (AIOutcome.reason) → повідомлення користувачу. Показується
+# ЛИШЕ коли й словниковий резерв не зрозумів запит (див. run_ai_query).
 _AI_REASON_TEXT = {
+    "limit": AI_LIMIT_TEXT,
+    "unavailable": AI_UNAVAILABLE_TEXT,
     "unparsable": AI_UNPARSABLE_TEXT,
     "empty": AI_EMPTY_TEXT,
 }
+
+
+async def try_dictionary_query(
+    target: Message | CallbackQuery,
+    services: BotServices,
+    state,
+    user_id: int,
+    text: str,
+    *,
+    default_section: str = "magic",
+) -> bool:
+    """Резервний розбір ТОГО САМОГО тексту СЛОВНИКОМ, коли ШІ не дав фільтра.
+
+    Дзеркалить звичайний вільний текст (freeform.handle_free_text): якщо словник
+    розпізнав запит — показує результат (одну базу, обидві бази чи список країн)
+    і повертає True. Якщо й словник не зрозумів — НІЧОГО не показує й стан не
+    чіпає, повертає False, щоб викликач сам вирішив, який текст невдачі показати.
+
+    Межі безпеки ті самі, що й скрізь: працюємо з агрегатами, донорів не бачимо,
+    whitelist полів лишається — це просто інший (детермінований) розбір тексту.
+    """
+    parsed = parse_free_text(text, default_section=default_section)
+
+    usable = not parsed.needs_clarification
+    if usable and not parsed.query.is_multi_country and parsed.query.is_empty:
+        # Порожній розбір корисний лише коли явно названо базу й немає нерозпізнаних
+        # слів — інакше це не «зрозумілий запит», а мовчазний нуль.
+        usable = parsed.section_named and not parsed.unrecognized
+    if not usable:
+        return False
+
+    # Є що показати: запит стає активним, крок майстра скидаємо.
+    await state.set_state(None)
+    await state.update_data(**query_to_state(parsed.query, parsed.mentioned))
+
+    show_both = not parsed.query.is_multi_country and (
+        parsed.both_bases or not parsed.section_named
+    )
+    if show_both:
+        await show_both_bases(
+            target, services, parsed.query, user_id, explicit_both=parsed.both_bases
+        )
+    else:
+        await show_result(target, services, parsed.query, user_id)
+    return True
 
 
 async def run_ai_query(
@@ -339,6 +400,9 @@ async def run_ai_query(
     ШІ лише перекладає текст у фільтр (базу/країну/метрики); валідація по
     whitelist і підрахунок — як завжди (ТЗ §5, донорів ШІ не бачить). Ліміт і
     лічильник викликів застосовуються самі (через AIService.try_interpret).
+
+    Якщо ШІ не дав фільтра — спершу пробуємо СЛОВНИК (як звичайний вільний текст),
+    і лише коли й він не зрозумів, показуємо повідомлення за причиною невдачі.
     Будь-яка проблема з ШІ → зрозуміле повідомлення, без падіння."""
     message = target.message if isinstance(target, CallbackQuery) else target
     if message is None:
@@ -351,9 +415,26 @@ async def run_ai_query(
     status = await message.answer(AI_STATUS_TEXT)
     outcome = await services.ai.interpret_with_reason(user_id, text.strip())
     if outcome.query is None:
-        # Причина визначає повідомлення: нерозбірне / порожній фільтр / недоступно.
-        failure_text = _AI_REASON_TEXT.get(outcome.reason, AI_FAILED_TEXT)
-        await status.edit_text(failure_text, reply_markup=back_to_menu())
+        # ШІ не дав фільтра (порожньо / нерозбірно / недоступно / ліміт). Перш ніж
+        # здатися — пробуємо СЛОВНИК на тому самому тексті, як у звичайному
+        # вільному тексті. Глухий кут лишається, ЛИШЕ коли НІ ШІ, НІ словник не
+        # зрозуміли запит.
+        await _delete_or_ignore(status)
+        data = await state.get_data()
+        if await try_dictionary_query(
+            message,
+            services,
+            state,
+            user_id,
+            text.strip(),
+            default_section=data.get("section_key", "magic"),
+        ):
+            return
+        # І словник не зрозумів → показуємо текст за причиною невдачі ШІ.
+        await message.answer(
+            _AI_REASON_TEXT.get(outcome.reason, AI_FAILED_TEXT),
+            reply_markup=back_to_menu(),
+        )
         return
     query = outcome.query
 

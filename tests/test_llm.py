@@ -377,6 +377,28 @@ class TestПромтБезПоляВихідних:
         assert "англьійською" in lowered  # конкретний приклад одруку → мова en
 
 
+class TestПитальніФормулювання:
+    """Фаза 2B: питальні запити («Скільки донорів по X?») — теж фільтр, не {}.
+
+    LLM моканий: підкладаємо JSON, який модель має віддати за ПІДСИЛЕНОЮ
+    інструкцією. Перевіряємо, що інтерпретатор зводить це до непорожнього
+    фільтра (сам факт, що gpt-4o-mini на це формулювання без інструкції віддавав
+    `{}`, і був причиною глухого кута — див. tests/test_ai_fallback.py)."""
+
+    async def test_питальний_запит_дає_непорожній_фільтр(self):
+        post = fake_post(anthropic_response('{"section":"mordy","country":"us"}'))
+        interpreter = LLMInterpreter(AnthropicProvider("k", "m", 1, http_post=post))
+        query = await interpreter.interpret("Скільки донорів у базі Морди по США?")
+        assert query is not None
+        assert query.section_key == "mordy"
+        assert query.country is country_by_code("us")
+
+    def test_промт_велить_трактувати_питання_як_фільтр(self):
+        lowered = SYSTEM_PROMPT.lower()
+        assert "питальн" in lowered  # інструкція про питальні формулювання є
+        assert "скільки донорів" in lowered  # few-shot приклад із питанням
+
+
 class TestСервіс:
     def test_вимкнено_без_ключа(self):
         settings = ai_settings(llm_api_key="")
