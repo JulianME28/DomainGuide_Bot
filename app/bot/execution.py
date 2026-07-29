@@ -33,8 +33,10 @@ from app.analytics.recommendations import (
 from app.bot.context import BotServices
 from app.bot.keyboards import back_to_menu, both_bases_menu, result_menu
 from app.bot.states import query_to_state
+from app.llm.service import AIOutcome
 from app.logging_setup import get_logger
 from app.text.cards import (
+    escape,
     render_both_bases,
     render_compact_block,
     render_compact_multi_block,
@@ -328,15 +330,16 @@ def _compute_multi(dataset, query: DonorQuery):
     return result, suggestions
 
 
-async def resolve_with_ai(services: BotServices, user_id: int, text: str) -> DonorQuery | None:
+async def resolve_with_ai(services: BotServices, user_id: int, text: str) -> AIOutcome | None:
     """Резервний розбір через ШІ — лише коли ШІ ввімкнено (є ключ).
 
-    Викликається ТІЛЬКИ якщо детермінований словниковий розбір не зрозумів
-    запит. Будь-яка проблема (вимкнено, ліміт, помилка, таймаут) → None, і
-    викликач показує звичайну підказку. ШІ бачить лише текст — не дані."""
+    Викликається ТІЛЬКИ якщо детермінований словниковий розбір не зрозумів запит.
+    Повертає повний AIOutcome (фільтр + причина + НАМІР), щоб викликач розрізнив
+    донор-запит, розмовне питання й невдачу. None — коли ШІ вимкнено взагалі.
+    ШІ бачить лише текст — не дані."""
     if services.ai is None:
         return None
-    return await services.ai.try_interpret(user_id, text)
+    return await services.ai.interpret_with_reason(user_id, text)
 
 
 AI_DISABLED_TEXT = (
@@ -380,6 +383,13 @@ AI_EMPTY_TEXT = (
 )
 
 AI_STATUS_TEXT = "🧠 Питаю ШІ..."
+
+# Розмовна смуга не змогла відповісти (ліміт квоти ШІ або збій провайдера).
+AI_CHAT_FAILED_TEXT = (
+    "🧠 <b>Не вдалося відповісти зараз.</b>\n\n"
+    "Можливо, вичерпано ліміт запитів до ШІ. Спробуйте трохи згодом або "
+    "скористайтеся кнопками меню — /start."
+)
 
 # Причина невдачі ШІ (AIOutcome.reason) → повідомлення користувачу. Показується
 # ЛИШЕ коли й словниковий резерв не зрозумів запит (див. run_ai_query).
@@ -463,11 +473,22 @@ async def run_ai_query(
     status = await message.answer(AI_STATUS_TEXT)
     outcome = await services.ai.interpret_with_reason(user_id, text.strip())
     if outcome.query is None:
-        # ШІ не дав фільтра (порожньо / нерозбірно / недоступно / ліміт). Перш ніж
-        # здатися — пробуємо СЛОВНИК на тому самому тексті, як у звичайному
-        # вільному тексті. Глухий кут лишається, ЛИШЕ коли НІ ШІ, НІ словник не
-        # зрозуміли запит.
         await _delete_or_ignore(status)
+
+        # Розмовне питання («що таке заспамленість?», «як користуватись ботом?»)
+        # → окрема РОЗМОВНА смуга (без доступу до даних, chat.py). Лише коли модель
+        # прямо сказала intent=question; на збої/ліміті intent лишається filter.
+        if outcome.intent == "question":
+            logger.info("Маршрут ШІ (користувач %s): розмовна смуга", user_id)
+            answer = await services.ai.answer_question(user_id, text.strip())
+            await message.answer(
+                f"🧠 {escape(answer)}" if answer else AI_CHAT_FAILED_TEXT,
+                reply_markup=back_to_menu(),
+            )
+            return
+
+        # Не питання → пробуємо СЛОВНИК на тому самому тексті (Фаза 2A). Глухий кут
+        # лишається, ЛИШЕ коли НІ ШІ, НІ словник не зрозуміли запит.
         data = await state.get_data()
         if await try_dictionary_query(
             message,
@@ -477,6 +498,7 @@ async def run_ai_query(
             text.strip(),
             default_section=data.get("section_key", "magic"),
         ):
+            logger.info("Маршрут ШІ (користувач %s): словниковий фолбек", user_id)
             return
         # І словник не зрозумів → показуємо текст за причиною невдачі ШІ.
         await message.answer(
@@ -484,6 +506,8 @@ async def run_ai_query(
             reply_markup=back_to_menu(),
         )
         return
+
+    logger.info("Маршрут ШІ (користувач %s): донор-запит", user_id)
     query = outcome.query
 
     # Розпізнане ШІ стає активним запитом (як звичайний), стан скидаємо.

@@ -18,6 +18,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from app.analytics.query import DonorQuery
+from app.llm.chat import ConversationResponder
 from app.llm.interpreter import LLMInterpreter
 from app.llm.provider import AnthropicProvider, HttpPost, LLMError, LLMProvider, OpenAIProvider
 from app.logging_setup import get_logger
@@ -36,10 +37,16 @@ class AIOutcome:
       * "unavailable" — ШІ недоступний: мережа, порожня відповідь, дивний формат;
       * "unparsable"  — ШІ відповів, але не валідним JSON / відповідь обрізана;
       * "empty"       — валідний JSON, але жодного дозволеного фільтра не впізнано.
+
+    intent — намір, який повернула модель у ТОМУ САМОМУ виклику ("filter" за
+    замовчуванням, "question" — пояснювальне питання). Керує маршрутизацією ЛИШЕ
+    коли query is None: питання → розмовна смуга, інакше → словниковий фолбек.
+    Валідний фільтр (query != None) завжди донор-запит, хай там який intent.
     """
 
     query: DonorQuery | None
     reason: str
+    intent: str = "filter"
 
 
 # Стадія помилки виклику (LLMError.stage) → причина для користувача/логіки.
@@ -99,9 +106,11 @@ class AIService:
         limit: int,
         window_seconds: int,
         model: str,
+        responder: ConversationResponder | None = None,
         clock: Callable[[], float] = time.time,
     ) -> None:
         self._interpreter = interpreter
+        self._responder = responder
         self._limiter = AICallLimiter(limit, window_seconds)
         self._counter = AIDailyCounter()
         self.model = model
@@ -128,7 +137,7 @@ class AIService:
 
         self._counter.bump(now)
         try:
-            query = await self._interpreter.interpret(text)
+            interpretation = await self._interpreter.interpret_full(text)
         except LLMError as exc:
             # Текст LLMError не містить ключа — логувати безпечно. Стадію пишемо
             # окремо, щоб у логу було видно, ЩО саме зламалось.
@@ -148,24 +157,53 @@ class AIService:
             )
             return AIOutcome(None, "unavailable")
 
+        query, intent = interpretation.query, interpretation.intent
+        # Рішення маршрутизатора в лог: намір моделі + чи витягнувся фільтр. Куди
+        # запит пішов урешті (донор / чат / словник) логує вже викликач.
+        logger.info(
+            "Виклик ШІ (користувач %s): intent=%s, фільтр=%s",
+            user_id,
+            intent,
+            "є" if query is not None else "нема",
+        )
         if query is None:
-            logger.info(
-                "Виклик ШІ (користувач %s): фільтр порожній після whitelist-валідації", user_id
-            )
-            return AIOutcome(None, "empty")
+            return AIOutcome(None, "empty", intent=intent)
+        return AIOutcome(query, "ok", intent=intent)
 
-        logger.info("Виклик ШІ (користувач %s): розпізнано", user_id)
-        return AIOutcome(query, "ok")
+    async def answer_question(self, user_id: int, text: str) -> str | None:
+        """Розмовна відповідь на пояснювальне питання — через ту саму квоту ШІ
+        (той самий ліміт і лічильник витрат, ТЗ §11).
+
+        None — коли розмовна смуга недоступна, ліміт вичерпано або стався збій;
+        тоді викликач показує ввічливе повідомлення. Донорів і даних ця смуга не
+        бачить (див. app/llm/chat.py)."""
+        if self._responder is None:
+            return None
+        now = self._clock()
+        if not self._limiter.allow(user_id, now):
+            logger.info("Ліміт викликів ШІ вичерпано (розмова): користувач %s", user_id)
+            return None
+        self._counter.bump(now)
+        try:
+            answer = await self._responder.answer(text)
+        except Exception as exc:  # мережа/формат/таймаут — не валимо бота
+            logger.error("Розмовна відповідь ШІ не вдалася (користувач %s): %s", user_id, exc)
+            return None
+        logger.info("Виклик ШІ (користувач %s): розмовна відповідь надана", user_id)
+        return answer
 
 
-def _build_provider(settings: Settings, http_post: HttpPost | None) -> LLMProvider:
+def _build_provider(
+    settings: Settings, http_post: HttpPost | None, *, model: str | None = None
+) -> LLMProvider:
     """Обирає провайдера ШІ за LLM_PROVIDER (перемикання лише через .env).
 
-    Контракт однаковий, тож решта коду (інтерпретатор, сервіс) не залежить від
+    `model` дозволяє задати іншу модель, ніж дефолтна фільтрова (для розмовної
+    смуги — LLM_CHAT_MODEL). Контракт однаковий, тож решта коду не залежить від
     того, який саме API за цим викликом."""
     common = {
         "api_key": settings.llm_api_key,
-        "model": settings.llm_model,
+        "model": model or settings.llm_model,
         "timeout_seconds": settings.llm_timeout_seconds,
         "http_post": http_post,
         "max_tokens": settings.llm_max_tokens,
@@ -178,15 +216,22 @@ def _build_provider(settings: Settings, http_post: HttpPost | None) -> LLMProvid
 def build_ai_service(settings: Settings, *, http_post: HttpPost | None = None) -> AIService | None:
     """Збирає сервіс ШІ з налаштувань. None — коли ШІ вимкнено (немає ключа).
 
+    Будує ДВІ смуги на одному ключі й під однією квотою:
+      * інтерпретатор фільтрів — на LLM_MODEL (дешева фільтрова модель);
+      * розмовна смуга — на LLM_CHAT_MODEL (за замовчуванням = LLM_MODEL; сильнішу
+        вмикають свідомо через .env). Розмовна смуга даних не бачить (chat.py).
+
     http_post дозволяє підмінити мережу в тестах; у бою лишається стандартним.
     """
     if not settings.llm_enabled:
         return None
 
     provider = _build_provider(settings, http_post)
+    chat_provider = _build_provider(settings, http_post, model=settings.llm_chat_model)
     return AIService(
         LLMInterpreter(provider),
         limit=settings.llm_calls_limit,
         window_seconds=settings.llm_window_seconds,
         model=settings.llm_model,
+        responder=ConversationResponder(chat_provider),
     )

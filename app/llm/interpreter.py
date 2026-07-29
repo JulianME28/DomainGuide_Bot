@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import dataclass
 
 from app.analytics.query import DonorQuery
 from app.dictionary.countries import COUNTRIES, country_by_code
@@ -27,6 +28,10 @@ RAW_LOG_LIMIT = 300
 
 # Розділи, які ШІ може обрати (лише ті, що читають дані).
 ALLOWED_SECTIONS = frozenset({"magic", "mordy"})
+
+# Наміри маршрутизатора. Усе поза цим — зводиться до "filter" (безпечний дефолт:
+# збій класифікації НІКОЛИ не веде в розмовну смугу).
+ALLOWED_INTENTS = frozenset({"filter", "question"})
 
 # Числові поля-фільтри, які приймаємо від ШІ. Усе поза цим списком — ігнорується.
 # Стовпця «вихідні» (F) тут немає: якість фільтрується ЛИШЕ по заспамленості
@@ -61,7 +66,8 @@ SYSTEM_PROMPT = (
     '  "language": код однієї мови (старий сумісний формат)\n'
     '  "dr_min","dr_max": DR (авторитетність), невід\'ємні числа\n'
     '  "traffic_min","traffic_max": трафік, невід\'ємні числа\n'
-    '  "spam_min","spam_max": ЗАСПАМЛЕНІСТЬ (лише для mordy), невід\'ємні числа\n\n'
+    '  "spam_min","spam_max": ЗАСПАМЛЕНІСТЬ (лише для mordy), невід\'ємні числа\n'
+    '  "intent": "filter" (за замовчуванням) або "question" — див. блок INTENT нижче\n\n'
     "НАПРЯМОК ПОРОГІВ (не плутай):\n"
     "• DR і трафік — «більше = краще», тож «від N» → dr_min / traffic_min "
     "(за замовчуванням для них саме мінімум).\n"
@@ -93,8 +99,15 @@ SYSTEM_PROMPT = (
     "Приклади:\n"
     '• «Скільки донорів у базі Морди по США?» → {"section": "mordy", "country": "us"}\n'
     '• «Є французькі донори з DR від 30?» → {"country": "fr", "dr_min": 30}\n'
-    "Порожній {} повертай ЛИШЕ коли фільтрувати справді нема за чим — жодної згадки "
-    "бази, країни, мови чи числового порога.\n"
+    'INTENT — фільтр чи питання. За замовчуванням intent="filter" (запит на '
+    'кількість донорів). Постав intent="question" ЛИШЕ для пояснювальних / how-to / '
+    "порівняльних питань, що НЕ просять кількість: «що таке заспамленість?», «як "
+    "користуватись ботом?», «.com чи .us краще для США?», «яка різниця між DR і "
+    'трафіком?». Для таких питань поверни {"intent": "question"} БЕЗ фільтра (без '
+    "країни, мови, зони, порогів). А «скільки донорів по X» — це НЕ question, це "
+    "звичайний filter.\n"
+    "Порожній фільтр (без країни, мови, зони, порога) повертай лише коли справді "
+    'нема за чим фільтрувати; якщо це пояснювальне питання — додай {"intent": "question"}.\n'
 )
 
 
@@ -296,17 +309,37 @@ def interpret_json(payload: dict) -> DonorQuery | None:
     return query
 
 
+def read_intent(payload: dict) -> str:
+    """Намір із JSON: "question" лише коли модель прямо так сказала, інакше "filter".
+
+    Whitelist той самий за духом, що й для фільтрів: невідоме значення → безпечний
+    дефолт "filter" (модель не може випадково відправити донор-запит у розмову)."""
+    raw = payload.get("intent")
+    return raw if raw in ALLOWED_INTENTS else "filter"
+
+
+@dataclass(frozen=True, slots=True)
+class Interpretation:
+    """Результат розбору: фільтр (або None) + намір маршрутизатора.
+
+    query=None означає «фільтра нема»; intent каже, КУДИ тоді йти — у розмовну
+    смугу ("question") чи в словниковий фолбек ("filter")."""
+
+    query: DonorQuery | None
+    intent: str = "filter"
+
+
 class LLMInterpreter:
-    """Обгортка: текст → (виклик моделі) → перевірений DonorQuery або None."""
+    """Обгортка: текст → (виклик моделі) → перевірений DonorQuery + намір."""
 
     def __init__(self, provider: LLMProvider, *, catalog: str | None = None) -> None:
         self._provider = provider
         self._system = f"{SYSTEM_PROMPT}\n{catalog or build_catalog()}"
 
-    async def interpret(self, text: str) -> DonorQuery | None:
-        """Текст → DonorQuery. Кидає LLMError на будь-якій невдачі виклику чи
-        розбору (ловить її вже AIService); None — коли модель відповіла валідно,
-        але жоден дозволений фільтр не впізнано (тихий фолбек на словник)."""
+    async def interpret_full(self, text: str) -> Interpretation:
+        """Текст → (фільтр, намір). Кидає LLMError на невдачі виклику/розбору
+        (ловить AIService). query=None — модель відповіла валідно, але фільтра
+        немає; тоді intent вирішує: розмова чи словниковий фолбек."""
         raw = await self._provider.complete(self._system, text)
         payload = _parse_json(raw)
         if payload is None:
@@ -318,4 +351,9 @@ class LLMInterpreter:
                 raw[:RAW_LOG_LIMIT],
             )
             raise LLMError("не вдалося витягти JSON з відповіді ШІ", stage="unparsable")
-        return interpret_json(payload)
+        return Interpretation(query=interpret_json(payload), intent=read_intent(payload))
+
+    async def interpret(self, text: str) -> DonorQuery | None:
+        """Сумісний тонкий шар: лише фільтр (без наміру). Для викликів, яким
+        маршрутизація не потрібна."""
+        return (await self.interpret_full(text)).query

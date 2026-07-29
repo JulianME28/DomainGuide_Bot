@@ -14,6 +14,7 @@ from aiogram.types import CallbackQuery, Message
 from app.analytics.query import DonorQuery
 from app.bot.context import BotServices
 from app.bot.execution import (
+    AI_CHAT_FAILED_TEXT,
     execute,
     resolve_with_ai,
     safe_edit,
@@ -300,11 +301,21 @@ async def receive_free_text(message: Message, services: BotServices, state: FSMC
 
     if parsed.needs_clarification:
         # Словник не зрозумів — резервно пробуємо ШІ (якщо ввімкнено).
-        ai_query = await resolve_with_ai(services, message.from_user.id, text)
-        if ai_query is not None:
+        outcome = await resolve_with_ai(services, message.from_user.id, text)
+        if outcome is not None and outcome.query is not None:
             await state.set_state(None)
-            await state.update_data(**query_to_state(ai_query))
-            await show_result(message, services, ai_query, message.from_user.id)
+            await state.update_data(**query_to_state(outcome.query))
+            await show_result(message, services, outcome.query, message.from_user.id)
+            return
+        # Розмовне питання → окрема смуга (без доступу до даних).
+        if outcome is not None and outcome.intent == "question":
+            from app.text.cards import escape
+
+            answer = await services.ai.answer_question(message.from_user.id, text)
+            await message.answer(
+                f"🧠 {escape(answer)}" if answer else AI_CHAT_FAILED_TEXT,
+                reply_markup=back_to_menu(),
+            )
             return
 
         if parsed.unrecognized:

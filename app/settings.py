@@ -46,6 +46,9 @@ class Settings:
     # помилки. Порожній ключ = ШІ вимкнено, навіть якщо LLM_PROVIDER=anthropic.
     llm_api_key: str = field(default="", repr=False)
     llm_model: str = "claude-haiku-4-5-20251001"
+    # Модель РОЗМОВНОЇ смуги. Порожня → дорівнює llm_model (фільтровій). Сильнішу
+    # (напр. gpt-4o) вмикають свідомо через LLM_CHAT_MODEL — це не дефолт.
+    llm_chat_model: str = "claude-haiku-4-5-20251001"
     llm_timeout_seconds: int = 20
     llm_calls_limit: int = 10
     llm_window_seconds: int = 3600
@@ -190,6 +193,9 @@ def load_settings(env_file: str | Path | None = None, *, require_token: bool = T
     # дешеву модель відповідного провайдера. Явно вказана LLM_MODEL — перемагає.
     llm_provider = os.getenv("LLM_PROVIDER", "none").strip().lower() or "none"
     llm_model = os.getenv("LLM_MODEL", "").strip() or _default_llm_model(llm_provider)
+    # Розмовна модель: порожня LLM_CHAT_MODEL → та сама фільтрова (сильнішу для
+    # розмови вмикають свідомо, це не дефолт).
+    llm_chat_model = os.getenv("LLM_CHAT_MODEL", "").strip() or llm_model
 
     return Settings(
         bot_token=bot_token,
@@ -209,6 +215,7 @@ def load_settings(env_file: str | Path | None = None, *, require_token: bool = T
         log_level=(os.getenv("LOG_LEVEL", "INFO").strip().upper() or "INFO"),
         llm_api_key=os.getenv("LLM_API_KEY", "").strip(),
         llm_model=llm_model,
+        llm_chat_model=llm_chat_model,
         llm_timeout_seconds=_parse_int(
             os.getenv("LLM_TIMEOUT_SECONDS", ""), "LLM_TIMEOUT_SECONDS", 20
         ),

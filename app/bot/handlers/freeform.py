@@ -16,10 +16,15 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import InlineKeyboardMarkup, Message
 
 from app.bot.context import BotServices
-from app.bot.execution import resolve_with_ai, show_both_bases, show_result
+from app.bot.execution import (
+    AI_CHAT_FAILED_TEXT,
+    resolve_with_ai,
+    show_both_bases,
+    show_result,
+)
 from app.bot.keyboards import ai_retry_menu, back_to_menu, cancel_only
 from app.bot.states import Ask, query_to_state
-from app.text.cards import render_not_understood
+from app.text.cards import escape, render_not_understood
 from app.text.freeform import CLARIFICATION_TEXT, EMPTY_QUERY_HINT, parse_free_text
 
 router = Router(name="freeform")
@@ -53,10 +58,18 @@ async def handle_free_text(message: Message, services: BotServices, state: FSMCo
 
     if parsed.needs_clarification:
         # Словник не зрозумів — пробуємо ШІ (якщо ввімкнено). Не вийшло — підказка.
-        ai_query = await resolve_with_ai(services, message.from_user.id, text)
-        if ai_query is not None:
-            await state.update_data(**query_to_state(ai_query))
-            await show_result(message, services, ai_query, message.from_user.id)
+        outcome = await resolve_with_ai(services, message.from_user.id, text)
+        if outcome is not None and outcome.query is not None:
+            await state.update_data(**query_to_state(outcome.query))
+            await show_result(message, services, outcome.query, message.from_user.id)
+            return
+        # Фільтра нема, але це РОЗМОВНЕ питання → окрема смуга (без доступу до даних).
+        if outcome is not None and outcome.intent == "question":
+            answer = await services.ai.answer_question(message.from_user.id, text)
+            await message.answer(
+                f"🧠 {escape(answer)}" if answer else AI_CHAT_FAILED_TEXT,
+                reply_markup=back_to_menu(),
+            )
             return
         # ШІ не допоміг. Якщо у запиті БУЛИ слова-претензії на параметр — кажемо
         # прямо, чого не зрозуміли, а не глухе «не розпізнав».
