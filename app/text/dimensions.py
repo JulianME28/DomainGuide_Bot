@@ -276,6 +276,23 @@ def _read_lead_number(lead: str, *, bare_is_max: bool) -> tuple[float | None, fl
     return None
 
 
+def _sane_range(minimum: float | None, maximum: float | None) -> tuple[float | None, float | None]:
+    """Гасить ПЕРЕВЕРНУТИЙ діапазон (min > max), щоб не давати тихий нуль.
+
+    Такий діапазон виникає, коли «до N» насправді належить сусідньому виміру.
+    Приклад: «трафік від 100 + до 5 вихідних» на Меджику — «до 5» стосується
+    ВИХІДНИХ (стовпця, якого в Меджику немає), а не трафіку. Раніше виходив
+    неможливий діапазон трафіку 100–5 і мовчазний нуль донорів.
+
+    Рішення: лишаємо явно вказаний нижній поріг («від 100»), а хибний верхній
+    відкидаємо. Явне «від» користувач таки написав — його й поважаємо. Для
+    коректних діапазонів (min ≤ max) нічого не змінюється.
+    """
+    if minimum is not None and maximum is not None and minimum > maximum:
+        return minimum, None
+    return minimum, maximum
+
+
 def _read_numbers(
     window: str, *, bare_is_max: bool = False
 ) -> tuple[float | None, float | None] | None:
@@ -288,10 +305,13 @@ def _read_numbers(
     `bare_is_max` — куди йде число БЕЗ слова напрямку: для заспамленості й
     вихідних лінків це максимум («заспамленість 20» = ≤20), для DR/трафіку —
     мінімум («трафік 100» = ≥100).
+
+    Перевернутий діапазон (min > max) гаситься _sane_range: краще чесний нижній
+    поріг, ніж неможливий діапазон і тихий нуль.
     """
     both = re.search(rf"від\s*{_NUMBER}\s*до\s*{_NUMBER}", window)
     if both:
-        return _to_number(both.group(1)), _to_number(both.group(2))
+        return _sane_range(_to_number(both.group(1)), _to_number(both.group(2)))
 
     minimum: float | None = None
     maximum: float | None = None
@@ -305,7 +325,7 @@ def _read_numbers(
         elif maximum is None:
             maximum = value
     if minimum is not None or maximum is not None:
-        return minimum, maximum
+        return _sane_range(minimum, maximum)
 
     # «трафік 100» — назва й одразу число, без «від». Напрямок за замовчуванням
     # залежить від виміру: DR/трафік → мінімум, заспамленість/вихідні → максимум.
