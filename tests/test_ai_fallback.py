@@ -213,3 +213,19 @@ class TestДвіБазиЧерезШІ:
         combined = " ".join(_all_texts(message))
         assert "ШІ зрозумів як" in combined  # одно-базова картка з підписом ШІ
         assert "Морди" not in combined  # другу базу не приплітаємо
+
+    async def test_2x2_через_ші_обидві_бази_з_країнами(self, columns_config):
+        """Пункт III: ШІ віддав мультикраїнний фільтр + «меджик і морди» в тексті →
+        обидві бази, у кожної розклад по країнах."""
+        gb, de = country_by_code("gb"), country_by_code("de")
+        ai = FakeAI(AIOutcome(DonorQuery(section_key="magic", countries=(gb, de)), "ok"))
+        services = make_services(columns_config, ai=ai)
+        message = FakeMessage()
+        state = FakeState()
+
+        await run_ai_query(message, services, state, 1, "меджик і морди британія і німеччина")
+
+        combined = " ".join(_all_texts(message))
+        assert "Меджик" in combined and "Морди" in combined
+        assert "Розклад по країнах" in combined
+        assert "Британія" in combined and "Німеччина" in combined

@@ -405,3 +405,66 @@ class TestНеЗрозумівЗапит:
         text, _markup = _shown(message)
         assert "Знайдено донорів" in text
         assert "Не зрозумів запит по" not in text
+
+
+class TestДвіБазиМультикраїни:
+    """Пункт III: «2 бази × кілька країн» — обидві бази, у кожної розклад по країнах."""
+
+    async def test_2x2_обидві_бази_з_розкладом_по_країнах(self, both_services):
+        message = FakeMessage()
+        query = parse_free_text("меджик і морди британія і німеччина трафік від 100").query
+        assert query.is_multi_country  # передумова: це мультикраїнний запит
+        await show_both_bases(message, both_services, query, 1, explicit_both=True)
+
+        text, _markup = _shown(message)
+        # Обидві бази присутні.
+        assert "Меджик" in text and "Морди" in text
+        # Під кожною — розклад по країнах з обома країнами.
+        assert text.count("Розклад по країнах") == 2
+        assert "Британія" in text and "Німеччина" in text
+        assert "Разом донорів" in text
+        # Пояснення про ексклюзивність — РАЗ у шапці, не в кожному блоці.
+        assert text.count("лише в одній країні") == 1
+
+    async def test_2x2_попередження_про_незастосовну_заспамленість(self, both_services):
+        """Спам-фільтр у 2×2: Меджик чесно каже, що заспамленість незастосовна."""
+        message = FakeMessage()
+        query = parse_free_text("меджик і морди британія і німеччина до 20 вихідних").query
+        assert query.spam_max == 20 and query.is_multi_country
+        await show_both_bases(message, both_services, query, 1, explicit_both=True)
+
+        text, _markup = _shown(message)
+        # Меджик попереджає (колонки немає), а не мовчки ігнорує — і вказує на Морди.
+        assert "не застосовано" in text and "заспамленості" in text
+        assert "лише в базі Морди" in text
+
+    async def test_регресія_2_бази_одна_країна_компактний_блок(self, both_services):
+        """Комбо 3 (Варіант C): дві бази + ОДНА країна — звичайний компактний блок,
+        без мультикраїнного «Розкладу по країнах»."""
+        message = FakeMessage()
+        query = parse_free_text("меджик і морди британія трафік від 100").query
+        assert not query.is_multi_country
+        await show_both_bases(message, both_services, query, 1, explicit_both=True)
+
+        text, _markup = _shown(message)
+        assert "Меджик" in text and "Морди" in text
+        assert "Розклад по країнах" not in text  # одна країна — без розкладу
+        assert "Знайдено донорів" in text
+
+
+class TestМаршрутизаціяРішенняA:
+    """Рішення A: база не названа → обидві бази (і для однієї країни, і для списку)."""
+
+    def test_названа_база_мультикраїни_це_одна_база(self):
+        p = parse_free_text("меджик британія і німеччина")
+        assert p.section_named and not p.both_bases  # → одна база (show_multi_country)
+        assert p.query.is_multi_country
+
+    def test_без_бази_мультикраїни_це_обидві_бази(self):
+        p = parse_free_text("британія і німеччина")
+        assert not p.section_named  # → обидві бази (нова інтенція A)
+        assert p.query.is_multi_country
+
+    def test_без_бази_одна_країна_це_обидві_бази(self):
+        p = parse_free_text("британія")
+        assert not p.section_named  # симетрично — теж обидві бази

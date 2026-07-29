@@ -22,6 +22,7 @@ from app.analytics.engine import (
     QueryResult,
     run_multi_country,
     run_query,
+    unsupported_dimensions,
 )
 from app.analytics.query import Dimension, DonorQuery
 from app.analytics.recommendations import (
@@ -36,6 +37,7 @@ from app.logging_setup import get_logger
 from app.text.cards import (
     render_both_bases,
     render_compact_block,
+    render_compact_multi_block,
     render_multi_country,
     render_multi_summary,
     render_result,
@@ -92,6 +94,23 @@ def _supports_all(section, dimensions: frozenset[str]) -> bool:
     return True
 
 
+def _alt_base_title_for(
+    services: BotServices, dropped: frozenset[str], current_key: str
+) -> str | None:
+    """Назва бази, яка МАЄ всі відкинуті виміри — для мультикраїнного блоку.
+
+    Те саме, що _alt_base_for, але від готового набору `dropped` (бо
+    MultiCountryResult не несе dropped_dimensions). Повертає лише назву."""
+    if not dropped:
+        return None
+    for section in services.columns.sections.values():
+        if not section.reads_data or section.key == current_key:
+            continue
+        if _supports_all(section, dropped):
+            return section.title
+    return None
+
+
 async def execute(
     services: BotServices, query: DonorQuery, *, ai_explained: bool = False
 ) -> ExecutedQuery:
@@ -141,6 +160,16 @@ async def show_both_bases(
     if message is None:
         raise RuntimeError("Немає повідомлення, у яке можна відповісти")
 
+    # Запит по СПИСКУ країн рахуємо мультикраїнною моделлю НА КОЖНУ базу (пункт III).
+    is_multi = query.is_multi_country
+    if is_multi and len(query.countries) > MAX_MULTI_COUNTRIES:
+        await message.answer(
+            f"У списку забагато країн ({len(query.countries)}). За один запит — "
+            f"не більше {MAX_MULTI_COUNTRIES}. Зменшіть список і спробуйте ще раз.",
+            reply_markup=back_to_menu(),
+        )
+        return
+
     bases = data_bases(services)
     status = await message.answer(STATUS_TEXT)
 
@@ -149,10 +178,29 @@ async def show_both_bases(
         for key, _title in bases:
             per_base = query.replace(section_key=key)
             dataset = await services.repository.get(key)
-            # Без розподілів — компактному блоку вони не потрібні.
-            result = await asyncio.to_thread(run_query, dataset, per_base, with_breakdowns=False)
-            alt = _alt_base_for(services, result)
-            blocks.append(render_compact_block(result, dropped_alt_base=alt[1] if alt else None))
+            if is_multi:
+                # На кожну базу — ексклюзивний розклад по країнах. dropped: виміри,
+                # яких база не має (напр. заспамленість у Меджику) — чесно попереджаємо.
+                result = await asyncio.to_thread(
+                    run_multi_country, dataset, per_base, unrecognized=per_base.unrecognized
+                )
+                dropped = unsupported_dimensions(dataset, per_base)
+                blocks.append(
+                    render_compact_multi_block(
+                        result,
+                        dropped=dropped,
+                        dropped_alt_base=_alt_base_title_for(services, dropped, key),
+                    )
+                )
+            else:
+                # Одна країна: звичайний компактний блок (без розподілів).
+                result = await asyncio.to_thread(
+                    run_query, dataset, per_base, with_breakdowns=False
+                )
+                alt = _alt_base_for(services, result)
+                blocks.append(
+                    render_compact_block(result, dropped_alt_base=alt[1] if alt else None)
+                )
     except Exception:
         logger.exception("Не вдалося виконати запит по обох базах")
         await status.edit_text(
@@ -450,12 +498,11 @@ async def run_ai_query(
     # детермінованої детекції «меджик і морди»/«обидві бази». Межі безпеки й
     # whitelist без змін: словник теж не бачить донорів.
     #
-    # ВІДОМИЙ ЛІМІТ (пункт III, свідомо відкладено): для multi-country запиту
-    # обидві бази поки НЕ показуємо — show_both_bases рахує run_query, який не
-    # вміє списку країн, тож «2 бази × 2 країни» дало б число без фільтра по
-    # країнах. До появи композиції лишаємо такий запит на одній базі.
+    # Пункт III: show_both_bases тепер уміє й список країн (рахує run_multi_country
+    # на кожну базу), тож guard на multi-country знято — «меджик і морди британія
+    # і німеччина» через ШІ дає обидві бази × обидві країни.
     parsed = parse_free_text(text.strip())
-    if parsed.both_bases and not query.is_multi_country:
+    if parsed.both_bases:
         await show_both_bases(message, services, query, user_id, explicit_both=True)
         return
     await show_result(message, services, query, user_id, ai_explained=True)

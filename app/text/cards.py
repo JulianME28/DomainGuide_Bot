@@ -569,6 +569,51 @@ def render_compact_block(result: QueryResult, *, dropped_alt_base: str | None = 
     return "\n".join(lines)
 
 
+def render_compact_multi_block(
+    result: MultiCountryResult,
+    *,
+    dropped: frozenset[str] = frozenset(),
+    dropped_alt_base: str | None = None,
+) -> str:
+    """Компактний блок ОДНІЄЇ бази для зведеного показу «2 бази × кілька країн».
+
+    Розклад по країнах + «Разом» + середні + похибка. Великих блоків (суміжні
+    країни) і повтору пояснення про ексклюзивність тут НЕМАЄ — пояснення стоїть
+    раз у шапці render_both_bases.
+
+    `dropped` — виміри, яких ця база не має (напр. заспамленість у Меджику). Про
+    них ЧЕСНО попереджаємо, а не мовчки ігноруємо: інакше «незаспамлені Меджик +
+    Морди» тихо дезінформував би (той самий клас бага, що виполювали в групі E).
+    `dropped_alt_base` — назва бази, де ці показники Є (щоб було куди перейти).
+    """
+    if not result.available:
+        return (
+            f"🗂 <b>{escape(result.section_title)}</b> — тимчасово недоступна.\n"
+            f"<i>{escape((result.error or '')[:150])}</i>"
+        )
+
+    lines = [f"🗂 <b>{escape(result.section_title)}</b>"]
+    if result.stale:
+        lines.append(_stale_note(result.as_of))
+
+    unsupported = render_unsupported_note(dropped, result.section_title, dropped_alt_base)
+    if unsupported:
+        lines.append(unsupported)
+
+    lines.append("🌍 <b>Розклад по країнах:</b>")
+    for country, split in result.per_country:
+        lines.append(f"  {country.flag} {escape(country.name_uk)} — {format_country_split(split)}")
+
+    lines.append(f"✅ <b>Разом донорів:</b> {number(result.unique.count)}")
+    if result.unique.count:
+        lines.extend(_metrics_block(result.unique, tracks_spam=result.tracks_spam))
+        lines.append(_error_note(result.unique))
+    else:
+        lines.append("<i>За цими параметрами донорів не знайдено.</i>")
+
+    return "\n".join(lines)
+
+
 def render_both_bases(query, blocks: list[str], *, explicit_both: bool = False) -> str:
     """Зведене повідомлення по обох базах: спільний рядок запиту + блоки баз.
 
@@ -589,6 +634,14 @@ def render_both_bases(query, blocks: list[str], *, explicit_both: bool = False) 
         f"🔎 <b>Запит:</b> {escape(query.describe())}",
         base_note,
     ]
+
+    # Для списку країн — пояснення про ексклюзивність РАЗ у шапці (а не в кожному
+    # блоці бази): кожен донор рахується лише в одній країні.
+    if query.is_multi_country:
+        header.append(
+            "<i>ℹ️ Кожен донор — лише в одній країні, тому числа менші, ніж якщо "
+            "питати країну окремо.</i>"
+        )
 
     # Частину запиту не зрозуміли — кажемо про це в шапці, один раз на обидві
     # бази (це стосується розбору запиту, а не конкретної бази).
