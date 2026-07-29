@@ -158,20 +158,81 @@ def _iter_balanced_objects(text: str):
         start = text.find("{", start + 1)
 
 
+def _merge_payloads(objects: list[dict]) -> dict:
+    """Зливає КІЛЬКА JSON-об'єктів від моделі в один фільтр без втрат.
+
+    Навіщо. На запити типу «меджик і морди, британія і німеччина» модель інколи
+    відповідає кількома об'єктами поспіль (по одному на базу/країну):
+    `{"section":"magic","country":"gb"},{"section":"mordy","country":"de"}`.
+    Раніше брався ЛИШЕ перший — і мовчки губились і бази, і країни (баг зачіпав
+    навіть одно-базові multi-country запити).
+
+    Правило злиття:
+      * країни з усіх об'єктів (`country` і `countries`) збираються в спільний
+        список `countries` (дедуп, порядок збережено) — жодна не втрачається;
+      * решта полів — перше непорожнє значення виграє (стабільно, передбачувано).
+
+    Секцію навмисно НЕ зливаємо в список: контракт лишається одно-значним,
+    а рішення «одна база чи обидві» ухвалюється окремо — детекцією тексту в
+    run_ai_query (Варіант C). Так межі безпеки й whitelist не змінюються.
+    """
+    merged: dict = {}
+    countries: list[str] = []
+    seen: set[str] = set()
+
+    def add_country(code: object) -> None:
+        if isinstance(code, str):
+            key = code.strip().lower()
+            if key and key not in seen:
+                seen.add(key)
+                countries.append(key)
+
+    for obj in objects:
+        add_country(obj.get("country"))
+        raw_list = obj.get("countries")
+        if isinstance(raw_list, list | tuple):
+            for code in raw_list:
+                add_country(code)
+        for field, value in obj.items():
+            if field in ("country", "countries"):
+                continue
+            merged.setdefault(field, value)
+
+    if countries:
+        merged["countries"] = countries
+        merged.pop("country", None)
+    return merged
+
+
 def _parse_json(raw: str) -> dict | None:
-    """Дістає JSON-об'єкт із відповіді, навіть якщо модель обгорнула його в текст
-    чи markdown-блок (```json). Повертає None, якщо валідного об'єкта немає."""
+    """Дістає JSON-об'єкт(и) з відповіді, навіть якщо модель обгорнула їх у текст
+    чи markdown-блок (```json). Повертає None, якщо валідного об'єкта немає.
+
+    Якщо об'єктів кілька (модель розбила запит по базах/країнах) — не губимо їх
+    мовчки, як раніше, а зливаємо в один фільтр (_merge_payloads) і логуємо факт.
+    """
     if not raw:
         return None
     text = _strip_code_fences(raw)
+    objects: list[dict] = []
     for candidate in _iter_balanced_objects(text):
         try:
             payload = json.loads(candidate)
         except (json.JSONDecodeError, ValueError):
             continue  # цей кандидат — не JSON, пробуємо наступний
         if isinstance(payload, dict):
-            return payload
-    return None
+            objects.append(payload)
+
+    if not objects:
+        return None
+    if len(objects) == 1:
+        return objects[0]
+
+    logger.warning(
+        "ШІ повернув %d JSON-об'єктів замість одного — зливаю в один фільтр без втрат",
+        len(objects),
+    )
+    return _merge_payloads(objects)
 
 
 def interpret_json(payload: dict) -> DonorQuery | None:

@@ -11,6 +11,7 @@ gpt-4o-mini на питальні формулювання віддає рівн
 
 from __future__ import annotations
 
+from app.analytics.query import DonorQuery
 from app.bot.context import ActionLog, BotServices
 from app.bot.execution import (
     AI_EMPTY_TEXT,
@@ -19,6 +20,7 @@ from app.bot.execution import (
     run_ai_query,
 )
 from app.data.repository import DonorRepository
+from app.dictionary.countries import country_by_code
 from app.llm.service import AIOutcome
 from app.settings import Settings
 from tests.fixtures.fake_data import FakeReader, empty_rows, magic_rows
@@ -176,3 +178,38 @@ class TestФолбекУСловник:
         await run_ai_query(message, services, state, 1, "привіт як справи")
 
         assert AI_UNAVAILABLE_TEXT in _all_texts(message)
+
+
+class TestДвіБазиЧерезШІ:
+    """Варіант C: «меджик і морди …» через ШІ → обидві бази (show_both_bases).
+
+    Контракт ШІ одно-базовий, тож фільтр приходить від ШІ, а рішення «обидві
+    бази» — від детермінованої детекції parse_free_text на тому самому тексті."""
+
+    async def test_обидві_бази_коли_текст_каже_меджик_і_морди(self, columns_config):
+        gb = country_by_code("gb")
+        # ШІ віддав ОДНОбазовий фільтр (як і мусить за контрактом) — Британія.
+        ai = FakeAI(AIOutcome(DonorQuery(section_key="mordy", country=gb), "ok"))
+        services = make_services(columns_config, ai=ai)
+        message = FakeMessage()
+        state = FakeState()
+
+        await run_ai_query(message, services, state, 1, "меджик і морди британія трафік 100")
+
+        combined = " ".join(_all_texts(message))
+        # У відповіді присутні ОБИДВІ бази.
+        assert "Меджик" in combined and "Морди" in combined
+
+    async def test_одна_база_лишається_однією(self, columns_config):
+        """Регресія: без «обидві бази» в тексті — звичайна одно-базова картка."""
+        de = country_by_code("de")
+        ai = FakeAI(AIOutcome(DonorQuery(section_key="magic", country=de), "ok"))
+        services = make_services(columns_config, ai=ai)
+        message = FakeMessage()
+        state = FakeState()
+
+        await run_ai_query(message, services, state, 1, "німецькі донори")
+
+        combined = " ".join(_all_texts(message))
+        assert "ШІ зрозумів як" in combined  # одно-базова картка з підписом ШІ
+        assert "Морди" not in combined  # другу базу не приплітаємо

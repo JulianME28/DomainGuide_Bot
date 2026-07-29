@@ -443,6 +443,21 @@ async def run_ai_query(
     await state.update_data(**query_to_state(query))
     # Прибираємо статус «Питаю ШІ...» і показуємо картку окремим повідомленням.
     await _delete_or_ignore(status)
+
+    # Варіант C: контракт ШІ одно-базовий, тож «обидві бази» він виразити не може.
+    # Детекцію «обидві бази» беремо зі СЛОВНИКА (parse_free_text) на тому самому
+    # тексті — фільтр лишається від ШІ, а рішення «одна база чи обидві» — від
+    # детермінованої детекції «меджик і морди»/«обидві бази». Межі безпеки й
+    # whitelist без змін: словник теж не бачить донорів.
+    #
+    # ВІДОМИЙ ЛІМІТ (пункт III, свідомо відкладено): для multi-country запиту
+    # обидві бази поки НЕ показуємо — show_both_bases рахує run_query, який не
+    # вміє списку країн, тож «2 бази × 2 країни» дало б число без фільтра по
+    # країнах. До появи композиції лишаємо такий запит на одній базі.
+    parsed = parse_free_text(text.strip())
+    if parsed.both_bases and not query.is_multi_country:
+        await show_both_bases(message, services, query, user_id, explicit_both=True)
+        return
     await show_result(message, services, query, user_id, ai_explained=True)
 
 

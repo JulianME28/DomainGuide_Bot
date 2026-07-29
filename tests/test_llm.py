@@ -399,6 +399,40 @@ class TestПитальніФормулювання:
         assert "скільки донорів" in lowered  # few-shot приклад із питанням
 
 
+class TestМультиОбєктнаВідповідь:
+    """Фікс (II): модель віддала КІЛЬКА JSON-об'єктів — нічого не губимо мовчки.
+
+    Раніше брався лише перший об'єкт, і решта (бази й країни) зникали навіть в
+    одно-базових multi-country запитах. Тепер об'єкти зливаються без втрат."""
+
+    def test_parse_json_зливає_обєкти_без_втрати_країн(self):
+        from app.llm.interpreter import _parse_json
+
+        merged = _parse_json(
+            '{"section":"magic","country":"gb","traffic_min":100},'
+            '{"section":"mordy","country":"de","traffic_min":100}'
+        )
+        assert merged["countries"] == ["gb", "de"]  # обидві країни збережено
+        assert "country" not in merged
+        assert merged["section"] == "magic"  # перша секція (контракт одно-базовий)
+        assert merged["traffic_min"] == 100
+
+    def test_parse_json_один_обєкт_без_змін(self):
+        from app.llm.interpreter import _parse_json
+
+        assert _parse_json('{"country":"de"}') == {"country": "de"}
+
+    async def test_інтерпретатор_не_губить_другу_країну(self):
+        raw = '{"section":"magic","country":"gb"},{"section":"mordy","country":"de"}'
+        interpreter = LLMInterpreter(
+            AnthropicProvider("k", "m", 1, http_post=fake_post(anthropic_response(raw)))
+        )
+        query = await interpreter.interpret("британія і німеччина")
+        assert query is not None
+        assert {c.code for c in query.countries} == {"gb", "de"}
+        assert query.is_multi_country
+
+
 class TestСервіс:
     def test_вимкнено_без_ключа(self):
         settings = ai_settings(llm_api_key="")
