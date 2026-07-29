@@ -53,8 +53,7 @@ class TestКількаМов:
 
     def test_повний_початковий_запит_зберігає_всі_фільтри(self):
         parsed = parse_free_text(
-            "Меджик: UK+FR+DE+IT+ES, мови англ./нім./фр., "
-            "DR від 20, трафік від 10, зони .com/.org."
+            "Меджик: UK+FR+DE+IT+ES, мови англ./нім./фр., DR від 20, трафік від 10, зони .com/.org."
         )
 
         assert parsed.query.section_key == "magic"

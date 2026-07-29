@@ -152,12 +152,8 @@ class TestЕксклюзивнийРозподіл:
         )
         query = DonorQuery(
             section_key="magic",
-            countries=tuple(
-                country_by_code(code) for code in ("gb", "de", "fr", "es")
-            ),
-            languages=tuple(
-                language_by_code(code) for code in ("en", "de", "fr")
-            ),
+            countries=tuple(country_by_code(code) for code in ("gb", "de", "fr", "es")),
+            languages=tuple(language_by_code(code) for code in ("en", "de", "fr")),
             zones=(".com",),
         )
 

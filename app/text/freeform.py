@@ -493,10 +493,7 @@ def parse_free_text(text: str, *, default_section: str = "magic") -> ParsedQuery
     # СПИСОК країн (≥2 в одному запиті) — окремий шлях: розклад по країнах і
     # унікальний підсумок. Метричні фільтри застосовуються до всіх країн.
     # Якщо явно попросили зону — це не список країн, а запит по зоні.
-    is_country_list = (
-        not cancelled_dimension(Dimension.COUNTRY)
-        and len(countries_all) >= 2
-    )
+    is_country_list = not cancelled_dimension(Dimension.COUNTRY) and len(countries_all) >= 2
     if is_country_list:
         # «англомовні країни: UK, US…» описує принцип добору вже названого
         # списку, а не додатковий фільтр колонки «Мова».
