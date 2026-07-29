@@ -830,7 +830,7 @@ def run_multi_country(
     assigned: list[Donor] = []
 
     for donor in dataset.donors:
-        if not passes_metrics(donor, query):
+        if not passes_core(donor, query):
             continue
         best_key: tuple[int, int] | None = None
         best_code: str | None = None

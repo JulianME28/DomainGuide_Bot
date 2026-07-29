@@ -200,6 +200,14 @@ _RAW: tuple[tuple[str, str, str, str, tuple[str, ...], tuple[str, ...]], ...] = 
      ("люксембурзьк",), ("luxembourgish",)),
 )  # fmt: skip
 
+# Короткі кириличні aliases безпечні у вільному тексті: вони не збігаються
+# з латинськими двобуквеними кодами країн на кшталт FR/DE.
+_UK_ABBREVIATIONS: dict[str, tuple[str, ...]] = {
+    "en": ("англ",),
+    "de": ("нім",),
+    "fr": ("фр",),
+}
+
 
 def _build() -> dict[str, Language]:
     """Складає таблицю вище в готові об'єкти Language."""
@@ -217,6 +225,7 @@ def _build() -> dict[str, Language]:
         # Двобуквені синоніми прибираємо: "it", "in", "no", "is" збігаються
         # зі звичайними словами і дають хибні спрацювання у вільному тексті.
         synonyms = {s for s in synonyms if len(s) > 2}
+        synonyms.update(normalize_text(alias) for alias in _UK_ABBREVIATIONS.get(code, ()))
 
         languages[code] = Language(
             code=code,

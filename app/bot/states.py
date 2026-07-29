@@ -77,6 +77,8 @@ def query_to_state(query: DonorQuery, fresh: frozenset[str] | None = None) -> di
         FRESH_KEY: sorted(query.filled_dimensions if fresh is None else fresh),
         "section_key": query.section_key,
         "country_code": query.country.code if query.country else None,
+        "language_codes": [language.code for language in query.languages],
+        # Compatibility with state produced by older bot versions.
         "language_code": query.language.code if query.language else None,
         "geo_code": query.geo.code if query.geo else None,
         "zones": list(query.zones),
@@ -93,13 +95,23 @@ def query_from_state(data: dict[str, Any], *, default_section: str = "magic") ->
     """Збирає запит назад із збережених значень."""
     country_code = data.get("country_code")
     language_code = data.get("language_code")
+    language_codes = data.get("language_codes")
+    languages = tuple(
+        language
+        for code in (language_codes if isinstance(language_codes, list) else ())
+        if isinstance(code, str)
+        if (language := language_by_code(code)) is not None
+    )
+    if not languages and language_code:
+        legacy_language = language_by_code(language_code)
+        languages = (legacy_language,) if legacy_language is not None else ()
 
     geo_code = data.get("geo_code")
 
     return DonorQuery(
         section_key=data.get("section_key") or default_section,
         country=country_by_code(country_code) if country_code else None,
-        language=language_by_code(language_code) if language_code else None,
+        languages=languages,
         geo=country_by_code(geo_code) if geo_code else None,
         zones=tuple(data.get("zones") or ()),
         dr_min=data.get("dr_min"),
@@ -153,7 +165,11 @@ def summary_lines(
         return f"від {_clean(minimum)} до {_clean(maximum)}"
 
     country = query.country.name_uk if query.country else "не обрано"
-    language = query.language.name_uk if query.language else "не обрано"
+    language = (
+        ", ".join(language.name_uk for language in query.languages)
+        if query.languages
+        else "не обрано"
+    )
 
     geo_name = query.geo.name_uk if query.geo else "не важливо"
 
@@ -210,15 +226,16 @@ def conflict_warning(query: DonorQuery) -> str:
         return ""
 
     country = query.country
-    language = query.language
+    languages = query.languages
     main_language = country.language
+    language_names = ", ".join(language.name_uk for language in languages)
 
     return (
         f"⚠️ <b>Увага: країна і мова разом сильно звужують вибірку.</b>\n"
         f"Основна мова країни {country.name_uk} — "
         f"{main_language.name_uk if main_language else 'інша'}, "
-        f"а у фільтрі стоїть {language.name_uk}. "
-        f"Буде враховано лише донорів мовою {language.name_uk} "
+        f"а у фільтрі стоять мови: {language_names}. "
+        f"Буде враховано лише донорів однією з мов: {language_names} "
         f"у зоні {country.zones_label}.\n"
         f"Якщо це не те, що потрібно, приберіть мову кнопкою нижче."
     )

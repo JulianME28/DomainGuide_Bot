@@ -255,6 +255,20 @@ class TestКомбінованийЗапит:
         assert "мова німецька" in card
         assert LANGUAGE_MARK not in card, "користувач сам звузив — додаток зайвий"
 
+    async def test_кілька_мов_повністю_видно_у_картці(self, magic):
+        query = DonorQuery(
+            section_key="magic",
+            languages=(
+                language_by_code("en"),
+                language_by_code("de"),
+                language_by_code("fr"),
+            ),
+        )
+
+        card = render_result(run_query(magic, query))
+
+        assert "мови англійська, німецька, французька" in card
+
 
 class TestФразаПрохання:
     """Фразу-прохання бот пояснює й показує суміжні, а не робить фільтром."""

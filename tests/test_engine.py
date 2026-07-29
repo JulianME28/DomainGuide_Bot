@@ -21,6 +21,109 @@ def donor(domain="x.de", zone=".de", language="german", dr=None, traffic=None) -
     return Donor(domain=domain, zone=zone, language=language, dr=dr, traffic=traffic)
 
 
+class TestКанонічніМовиЗапиту:
+    def test_старе_поле_створює_канонічний_список(self):
+        english = language_by_code("en")
+
+        query = DonorQuery(section_key="magic", language=english)
+
+        assert query.languages == (english,)
+        assert query.language is english
+
+    def test_список_мов_є_канонічним(self):
+        english = language_by_code("en")
+        german = language_by_code("de")
+
+        query = DonorQuery(section_key="magic", languages=(english, german))
+
+        assert query.languages == (english, german)
+        assert query.language is english
+
+    def test_старе_і_нове_поля_зливаються_стабільно_без_дублів(self):
+        english = language_by_code("en")
+        german = language_by_code("de")
+
+        query = DonorQuery(
+            section_key="magic",
+            language=english,
+            languages=(english, german, english),
+        )
+
+        assert query.languages == (english, german)
+        assert query.language is english
+
+    def test_опис_показує_всі_мови(self):
+        query = DonorQuery(
+            section_key="magic",
+            languages=(
+                language_by_code("en"),
+                language_by_code("de"),
+                language_by_code("fr"),
+            ),
+        )
+
+        assert "мови англійська, німецька, французька" in query.describe()
+
+    def test_or_фільтр_пропускає_кожну_вибрану_мову(self):
+        dataset = Dataset(
+            section_key="magic",
+            title="Меджик",
+            sheet_name="Меджик",
+            donors=(
+                donor(domain="en.com", zone=".com", language="english"),
+                donor(domain="de.com", zone=".com", language="german"),
+                donor(domain="fr.com", zone=".com", language="french"),
+                donor(domain="es.com", zone=".com", language="spanish"),
+            ),
+            loaded_at=0,
+        )
+        query = DonorQuery(
+            section_key="magic",
+            languages=(
+                language_by_code("en"),
+                language_by_code("de"),
+                language_by_code("fr"),
+            ),
+        )
+
+        result = run_query(dataset, query)
+
+        assert result.core.count == 3
+
+    def test_порожній_список_мов_не_фільтрує(self):
+        dataset = Dataset(
+            section_key="magic",
+            title="Меджик",
+            sheet_name="Меджик",
+            donors=(
+                donor(domain="en.com", zone=".com", language="english"),
+                donor(domain="es.com", zone=".com", language="spanish"),
+            ),
+            loaded_at=0,
+        )
+
+        assert run_query(dataset, DonorQuery(section_key="magic", languages=())).core.count == 2
+
+    def test_старий_одиничний_фільтр_працює_як_раніше(self):
+        dataset = Dataset(
+            section_key="magic",
+            title="Меджик",
+            sheet_name="Меджик",
+            donors=(
+                donor(domain="en.com", zone=".com", language="english"),
+                donor(domain="de.com", zone=".com", language="german"),
+            ),
+            loaded_at=0,
+        )
+
+        result = run_query(
+            dataset,
+            DonorQuery(section_key="magic", language=language_by_code("en")),
+        )
+
+        assert result.core.count == 1
+
+
 class TestСередні:
     def test_na_не_занижує_середній(self):
         """Донор без DR рахується в кількості, але не тягне середнє вниз."""

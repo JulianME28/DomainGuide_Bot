@@ -317,7 +317,10 @@ async def type_country(message: Message, services: BotServices, state: FSMContex
     # Спершу перевіряємо, чи це не мова: «англійською» — не країна.
     entities = scan_entities(text)
     if entities.country is None and entities.language is not None:
-        await state.update_data(language_code=entities.language.code)
+        await state.update_data(
+            language_code=entities.language.code,
+            language_codes=[entities.language.code],
+        )
         await _mark_fresh(state, Dimension.LANGUAGE)
         await message.answer(
             f"Це мова, а не країна — записав її як фільтр мови "
@@ -522,7 +525,7 @@ async def type_language(message: Message, services: BotServices, state: FSMConte
         )
         return
 
-    await state.update_data(language_code=language.code)
+    await state.update_data(language_code=language.code, language_codes=[language.code])
     await _mark_fresh(state, Dimension.LANGUAGE)
     await _goto_confirm(message, services, state)
 

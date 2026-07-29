@@ -57,7 +57,8 @@ SYSTEM_PROMPT = (
     '  "section": "magic" або "mordy"\n'
     '  "countries": масив кодів країн (коли країн кілька)\n'
     '  "country": код однієї країни\n'
-    '  "language": код мови\n'
+    '  "languages": масив кодів мов (коли мов кілька; OR-фільтр)\n'
+    '  "language": код однієї мови (старий сумісний формат)\n'
     '  "dr_min","dr_max": DR (авторитетність), невід\'ємні числа\n'
     '  "traffic_min","traffic_max": трафік, невід\'ємні числа\n'
     '  "spam_min","spam_max": ЗАСПАМЛЕНІСТЬ (лише для mordy), невід\'ємні числа\n\n'
@@ -187,9 +188,18 @@ def interpret_json(payload: dict) -> DonorQuery | None:
     if isinstance(payload.get("country"), str):
         single_country = country_by_code(payload["country"].strip().lower())
 
-    language = None
-    if isinstance(payload.get("language"), str):
-        language = language_by_code(payload["language"].strip().lower())
+    languages: list = []
+    if isinstance(payload.get("languages"), list | tuple):
+        seen_languages: set[str] = set()
+        for code in payload["languages"]:
+            language = language_by_code(code.strip().lower()) if isinstance(code, str) else None
+            if language is not None and language.code not in seen_languages:
+                seen_languages.add(language.code)
+                languages.append(language)
+    elif isinstance(payload.get("language"), str):
+        legacy_language = language_by_code(payload["language"].strip().lower())
+        if legacy_language is not None:
+            languages.append(legacy_language)
 
     metrics: dict[str, float] = {}
     for field in ALLOWED_METRIC_FIELDS:
@@ -208,11 +218,11 @@ def interpret_json(payload: dict) -> DonorQuery | None:
         section_key=section,
         countries=tuple(countries) if is_multi else (),
         country=None if is_multi else (countries[0] if countries else single_country),
-        language=language,
+        languages=tuple(languages),
         **metrics,
     )
 
-    if not (query.country or query.countries or query.language or query.has_metric_filters):
+    if not (query.country or query.countries or query.languages or query.has_metric_filters):
         return None
     return query
 
