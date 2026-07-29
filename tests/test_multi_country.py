@@ -11,8 +11,9 @@ import pytest
 
 from app.analytics.engine import run_multi_country
 from app.analytics.query import DonorQuery
-from app.data.models import Donor
+from app.data.models import Dataset, Donor
 from app.dictionary.countries import country_by_code
+from app.dictionary.languages import language_by_code
 from app.text.cards import render_multi_country
 from app.text.freeform import parse_free_text
 
@@ -135,6 +136,35 @@ def make_dataset(donors, *, tracks_geo=True):
 
 
 class TestЕксклюзивнийРозподіл:
+    def test_список_країн_поважає_or_фільтр_кількох_мов(self):
+        dataset = Dataset(
+            section_key="magic",
+            title="Меджик",
+            sheet_name="Меджик",
+            donors=(
+                Donor("en.com", ".com", "english", 30, 100, geo_code="gb", geo_traffic=10),
+                Donor("de.com", ".com", "german", 30, 100, geo_code="de", geo_traffic=10),
+                Donor("fr.com", ".com", "french", 30, 100, geo_code="fr", geo_traffic=10),
+                Donor("es.com", ".com", "spanish", 30, 100, geo_code="es", geo_traffic=10),
+            ),
+            loaded_at=0,
+            tracks_geo=True,
+        )
+        query = DonorQuery(
+            section_key="magic",
+            countries=tuple(
+                country_by_code(code) for code in ("gb", "de", "fr", "es")
+            ),
+            languages=tuple(
+                language_by_code(code) for code in ("en", "de", "fr")
+            ),
+            zones=(".com",),
+        )
+
+        result = run_multi_country(dataset, query)
+
+        assert result.unique.count == 3
+
     async def test_розклад_ексклюзивний(self, magic):
         """Німецька — спільна (de/at/ch), тож мовний крок у підсумок не входить."""
         result = run_multi_country(magic, de_at_ch())

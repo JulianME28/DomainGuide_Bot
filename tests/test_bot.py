@@ -268,6 +268,22 @@ class TestЗберіганняЗапиту:
         assert restored.dr_min == 30
         assert restored.traffic_min == 100
 
+    def test_кілька_мов_зберігаються_і_відновлюються(self):
+        original = DonorQuery(
+            section_key="magic",
+            languages=(
+                language_by_code("en"),
+                language_by_code("de"),
+                language_by_code("fr"),
+            ),
+        )
+
+        data = query_to_state(original)
+        restored = query_from_state(data)
+
+        assert data["language_codes"] == ["en", "de", "fr"]
+        assert [language.code for language in restored.languages] == ["en", "de", "fr"]
+
     def test_порожній_запит_теж_відновлюється(self):
         restored = query_from_state({})
         assert restored.section_key == "magic"

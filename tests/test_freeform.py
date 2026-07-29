@@ -32,6 +32,52 @@ class TestВизначенняБази:
         assert not named
 
 
+class TestКількаМов:
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [
+            ("мова англ", ["en"]),
+            ("мова англ.", ["en"]),
+            ("мови англ/нім/фр", ["en", "de", "fr"]),
+            ("мови англ./нім./фр.", ["en", "de", "fr"]),
+            ("мови: англ., нім., фр.", ["en", "de", "fr"]),
+            ("англ та нім", ["en", "de"]),
+            ("англ, нім і фр", ["en", "de", "fr"]),
+        ],
+    )
+    def test_скорочення_формують_канонічний_список(self, text, expected):
+        parsed = parse_free_text(text)
+
+        assert [language.code for language in parsed.query.languages] == expected
+        assert parsed.unrecognized == ()
+
+    def test_повний_початковий_запит_зберігає_всі_фільтри(self):
+        parsed = parse_free_text(
+            "Меджик: UK+FR+DE+IT+ES, мови англ./нім./фр., "
+            "DR від 20, трафік від 10, зони .com/.org."
+        )
+
+        assert parsed.query.section_key == "magic"
+        assert {country.code for country in parsed.query.countries} == {
+            "gb",
+            "fr",
+            "de",
+            "it",
+            "es",
+        }
+        assert [language.code for language in parsed.query.languages] == ["en", "de", "fr"]
+        assert parsed.query.dr_min == 20
+        assert parsed.query.traffic_min == 10
+        assert parsed.query.zones == (".com", ".org")
+        assert parsed.unrecognized == ()
+
+    def test_невідоме_скорочення_не_ігнорується(self):
+        parsed = parse_free_text("мови англ/есп")
+
+        assert [language.code for language in parsed.query.languages] == ["en"]
+        assert "есп" in parsed.unrecognized
+
+
 class TestРеальніЗапити:
     def test_запит_з_тз(self):
         """Приклад прямо з технічного завдання."""

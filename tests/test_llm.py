@@ -138,6 +138,21 @@ class TestВалідаціяФільтра:
         assert query.is_multi_country
         assert {c.code for c in query.countries} == {"de", "at", "ch"}
 
+    def test_старе_поле_мови_підтримується(self):
+        query = interpret_json({"language": "en"})
+
+        assert [language.code for language in query.languages] == ["en"]
+
+    def test_новий_список_мов_підтримується_і_дедуплікується(self):
+        query = interpret_json({"languages": ["en", "de", "xx", "en", "fr"]})
+
+        assert [language.code for language in query.languages] == ["en", "de", "fr"]
+
+    def test_новий_список_мов_має_пріоритет_над_старим_полем(self):
+        query = interpret_json({"language": "fr", "languages": ["de", "en"]})
+
+        assert [language.code for language in query.languages] == ["de", "en"]
+
     def test_невідома_країна_відкидається(self):
         query = interpret_json({"country": "xx", "dr_min": 10})
         assert query.country is None
@@ -348,6 +363,10 @@ class TestПромтБезПоляВихідних:
     def test_у_схемі_немає_поля_вихідних(self):
         assert '"spam_min","spam_max"' in SYSTEM_PROMPT
         assert "outlinks" not in SYSTEM_PROMPT.lower()
+
+    def test_схема_описує_новий_і_старий_формати_мов(self):
+        assert '"languages"' in SYSTEM_PROMPT
+        assert '"language"' in SYSTEM_PROMPT
 
     def test_промт_явно_забороняє_окремий_фільтр_вихідних(self):
         lowered = SYSTEM_PROMPT.lower()

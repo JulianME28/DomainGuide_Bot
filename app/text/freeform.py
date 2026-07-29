@@ -47,7 +47,12 @@ from dataclasses import dataclass
 from app.analytics.query import Dimension, DonorQuery
 from app.dictionary.countries import country_by_zone
 from app.dictionary.normalize import find_zone_mentions, normalize_text
-from app.dictionary.resolver import find_all_countries, find_country_match, scan_entities
+from app.dictionary.resolver import (
+    find_all_countries,
+    find_all_languages,
+    find_country_match,
+    scan_entities,
+)
 from app.text.dimensions import SPECS, active_dimensions, resolve_dimensions
 
 # Фрази-ПРОХАННЯ: слова в тій самій частині речення — це підказка для
@@ -436,9 +441,10 @@ def parse_free_text(text: str, *, default_section: str = "magic") -> ParsedQuery
     # і текст, з якого розібране вже прибрано.
     matches, remaining = resolve_dimensions(normalized)
 
-    # Крок 2: країну й мову шукаємо в очищеному тексті — у ньому вже немає
-    # ні «будь-яка країна», ні «всі мови», тому словник їх не сплутає.
-    entities = scan_entities(remaining)
+    # Крок 2: збираємо ВСІ мови, прибираємо їх із тексту, а вже потім шукаємо
+    # країни. Так мовні назви не можуть перетворитися на схожі назви країн.
+    languages_found, without_languages = find_all_languages(remaining)
+    entities = scan_entities(without_languages)
 
     def cancelled_dimension(dimension: str) -> bool:
         match = matches.get(dimension)
@@ -449,7 +455,7 @@ def parse_free_text(text: str, *, default_section: str = "magic") -> ParsedQuery
         return (None, None) if match is None else (match.minimum, match.maximum)
 
     country = None if cancelled_dimension(Dimension.COUNTRY) else entities.country
-    language = None if cancelled_dimension(Dimension.LANGUAGE) else entities.language
+    languages = () if cancelled_dimension(Dimension.LANGUAGE) else tuple(languages_found)
 
     # Явна зона перемагає країну: користувач попросив саме зону, без водоспаду.
     zone_cancelled = cancelled_dimension(Dimension.ZONE)
@@ -481,7 +487,7 @@ def parse_free_text(text: str, *, default_section: str = "magic") -> ParsedQuery
     # Нерозпізнані слова-претензії на параметр (країна/мова/зона): беремо із
     # залишку, де вже затерто впізнані країни й мови. Так «Атлантида» чи одрук
     # «англьійською» не зникнуть тихо — вони підуть у рядок «не зрозумів».
-    countries_all, leftover = find_all_countries(remaining)
+    countries_all, leftover = find_all_countries(without_languages)
     unrecognized = _unrecognized_names(leftover)
 
     # СПИСОК країн (≥2 в одному запиті) — окремий шлях: розклад по країнах і
@@ -489,13 +495,17 @@ def parse_free_text(text: str, *, default_section: str = "magic") -> ParsedQuery
     # Якщо явно попросили зону — це не список країн, а запит по зоні.
     is_country_list = (
         not cancelled_dimension(Dimension.COUNTRY)
-        and not explicit_zones
         and len(countries_all) >= 2
     )
     if is_country_list:
+        # «англомовні країни: UK, US…» описує принцип добору вже названого
+        # списку, а не додатковий фільтр колонки «Мова».
+        multi_languages = () if countries_note else languages
         multi_query = DonorQuery(
             section_key=section,
             countries=tuple(countries_all),
+            languages=multi_languages,
+            zones=explicit_zones,
             geo=geo,
             unrecognized=unrecognized,
             countries_note=countries_note,
@@ -507,6 +517,10 @@ def parse_free_text(text: str, *, default_section: str = "magic") -> ParsedQuery
             spam_max=spam_max,
         )
         multi_mentioned = {Dimension.COUNTRY} | metric_mentions
+        if multi_languages:
+            multi_mentioned.add(Dimension.LANGUAGE)
+        if explicit_zones:
+            multi_mentioned.add(Dimension.ZONE)
         if geo_country is not None or geo_cancelled:
             multi_mentioned.add(Dimension.GEO)
         return ParsedQuery(
@@ -523,7 +537,7 @@ def parse_free_text(text: str, *, default_section: str = "magic") -> ParsedQuery
     query = DonorQuery(
         section_key=section,
         country=country,
-        language=language,
+        languages=languages,
         geo=geo,
         # Явно попрошена зона («у зоні .co.uk») — найсильніша. Інакше беремо
         # глобальні зони («.com»), але лише коли країни не назвали, бо разом
@@ -551,7 +565,7 @@ def parse_free_text(text: str, *, default_section: str = "magic") -> ParsedQuery
     mentioned = set(metric_mentions)
     if entities.country or entities.global_zones:
         mentioned.add(Dimension.COUNTRY)
-    if entities.language:
+    if languages:
         mentioned.add(Dimension.LANGUAGE)
     if geo_country is not None or geo_cancelled:
         mentioned.add(Dimension.GEO)

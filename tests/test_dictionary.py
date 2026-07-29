@@ -27,6 +27,7 @@ from app.dictionary.languages import (
 )
 from app.dictionary.resolver import (
     find_all_countries,
+    find_all_languages,
     hint_for_country_mode,
     hint_for_language_mode,
     resolve_country,
@@ -278,6 +279,54 @@ class TestРозпізнаванняМови:
     )  # fmt: skip
     def test_мова_розпізнається(self, text, code):
         assert resolve_language(text) is language_by_code(code)
+
+    @pytest.mark.parametrize(
+        ("text", "code"),
+        [
+            ("англ", "en"),
+            ("англ.", "en"),
+            ("нім", "de"),
+            ("нім.", "de"),
+            ("фр", "fr"),
+            ("фр.", "fr"),
+        ],
+    )
+    def test_українське_скорочення_розпізнається(self, text, code):
+        assert resolve_language(text) is language_by_code(code)
+
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [
+            ("мови англ/нім/фр", ["en", "de", "fr"]),
+            ("мови англ./нім./фр.", ["en", "de", "fr"]),
+            ("мови: англ., нім., фр.", ["en", "de", "fr"]),
+            ("англ та нім", ["en", "de"]),
+            ("англ, нім і фр", ["en", "de", "fr"]),
+        ],
+    )
+    def test_список_скорочень_повертає_всі_мови(self, text, expected):
+        languages, remaining = find_all_languages(text)
+
+        assert [language.code for language in languages] == expected
+        assert all(alias not in remaining for alias in ("англ", "нім", "фр") if alias in text)
+
+    def test_повтори_мов_дедуплікуються_зі_стабільним_порядком(self):
+        languages, _ = find_all_languages("нім, англ, нім")
+
+        assert [language.code for language in languages] == ["de", "en"]
+
+    def test_невідоме_скорочення_лишається_у_залишку(self):
+        languages, remaining = find_all_languages("мови англ, есп")
+
+        assert [language.code for language in languages] == ["en"]
+        assert "есп" in remaining
+
+    def test_латинські_коди_країн_не_стають_скороченнями_мов(self):
+        languages, _ = find_all_languages("UK+FR+DE")
+        countries, _ = find_all_countries("UK+FR+DE")
+
+        assert languages == []
+        assert {country.code for country in countries} == {"gb", "fr", "de"}
 
 
 class TestЗбігиПочатківСлів:

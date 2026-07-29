@@ -169,6 +169,33 @@ def resolve_language(text: str, *, allow_short: bool = False) -> Language | None
     return found[0] if found else None
 
 
+def find_all_languages(text: str) -> tuple[list[Language], str]:
+    """Повертає всі мови у порядку згадки та текст без розпізнаних мов."""
+    masked = normalize_text(text)
+    found_with_positions: list[tuple[int, Language]] = []
+
+    for _ in range(64):
+        found = find_language_match(masked, allow_short=False)
+        if found is None:
+            break
+        language, match = found
+        found_with_positions.append((match.start, language))
+        # Решітки не є словом і зберігають довжину рядка, тому позиції наступних
+        # збігів залишаються прив'язаними до початкового нормалізованого тексту.
+        masked = masked[: match.start] + "#" * match.length + masked[match.end :]
+
+    languages: list[Language] = []
+    seen: set[str] = set()
+    for _position, language in sorted(found_with_positions, key=lambda item: item[0]):
+        if language.code in seen:
+            continue
+        seen.add(language.code)
+        languages.append(language)
+
+    remaining = normalize_text(masked.replace("#", " "))
+    return languages, remaining
+
+
 # ---------------------------------------------------------------------------
 # Резолвер КРАЇНИ
 # ---------------------------------------------------------------------------

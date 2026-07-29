@@ -141,7 +141,7 @@ async def query_language(callback: CallbackQuery, services: BotServices, state: 
         await callback.answer("Невідома мова", show_alert=True)
         return
 
-    query = DonorQuery(section_key=section_key, language=language)
+    query = DonorQuery(section_key=section_key, languages=(language,))
     await state.set_state(None)
     await state.update_data(**query_to_state(query))
     await callback.answer()
@@ -226,7 +226,7 @@ async def receive_language(message: Message, services: BotServices, state: FSMCo
 
     language = resolve_language(text, allow_short=True)
     if language is not None:
-        query = DonorQuery(section_key=section_key, language=language)
+        query = DonorQuery(section_key=section_key, languages=(language,))
         await state.set_state(None)
         await state.update_data(**query_to_state(query))
         await show_result(message, services, query, message.from_user.id)

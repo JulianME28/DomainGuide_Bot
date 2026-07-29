@@ -82,7 +82,9 @@ class DonorQuery:
     """Яку базу питаємо: "magic", "mordy"."""
 
     country: Country | None = None
+    # Compatibility/deprecated field. New code must use canonical `languages`.
     language: Language | None = None
+    languages: tuple[Language, ...] = ()
     zones: tuple[str, ...] = ()
     """Явно вказані зони — коли користувач написав «.com», а не назву країни."""
 
@@ -123,16 +125,31 @@ class DonorQuery:
     лінків (штуки), а не у відсотках. «Заспамленість до 40» = до 40 заспамлених.
     Сюди ж ведуть слова «вихідні лінки» — це синонім заспамленості в запиті."""
 
+    def __post_init__(self) -> None:
+        """Нормалізує старе й нове мовні поля в один канонічний список."""
+        merged = ((self.language,) if self.language is not None else ()) + tuple(self.languages)
+        canonical: list[Language] = []
+        seen: set[str] = set()
+        for item in merged:
+            if item.code in seen:
+                continue
+            seen.add(item.code)
+            canonical.append(item)
+
+        normalized = tuple(canonical)
+        object.__setattr__(self, "languages", normalized)
+        object.__setattr__(self, "language", normalized[0] if normalized else None)
+
     # -- вид запиту ----------------------------------------------------------
 
     @property
     def kind(self) -> QueryKind:
         """Визначає вид запиту за тим, що в ньому заповнено."""
-        if self.country and self.language:
+        if self.country and self.languages:
             return QueryKind.COMBINED
         if self.country:
             return QueryKind.COUNTRY
-        if self.language:
+        if self.languages:
             return QueryKind.LANGUAGE
         if self.zones:
             return QueryKind.ZONE
@@ -170,7 +187,7 @@ class DonorQuery:
         filled: set[str] = set()
         if self.country is not None:
             filled.add(Dimension.COUNTRY)
-        if self.language is not None:
+        if self.languages:
             filled.add(Dimension.LANGUAGE)
         if self.traffic_min is not None or self.traffic_max is not None:
             filled.add(Dimension.TRAFFIC)
@@ -195,8 +212,8 @@ class DonorQuery:
         """
         return bool(
             self.country is not None
-            and self.language is not None
-            and self.language.code != self.country.primary_language
+            and self.languages
+            and any(language.code != self.country.primary_language for language in self.languages)
         )
 
     def without(self, dimension: str) -> DonorQuery:
@@ -204,7 +221,7 @@ class DonorQuery:
         if dimension == Dimension.COUNTRY:
             return self.replace(country=None, zones=())
         if dimension == Dimension.LANGUAGE:
-            return self.replace(language=None)
+            return self.replace(language=None, languages=())
         if dimension == Dimension.TRAFFIC:
             return self.replace(traffic_min=None, traffic_max=None)
         if dimension == Dimension.DR:
@@ -233,7 +250,7 @@ class DonorQuery:
     @property
     def core_languages(self) -> frozenset[str]:
         """Значення колонки «Мова», за якими відбираємо донорів."""
-        return frozenset(self.language.data_keys) if self.language else frozenset()
+        return frozenset(key for language in self.languages for key in language.data_keys)
 
     # -- зміна запиту (кнопки «додати фільтр», «пониження метрик») -----------
 
@@ -261,8 +278,9 @@ class DonorQuery:
                 parts.append(f"{len(self.countries)} країн")
         elif self.country:
             parts.append(f"{self.country.name_uk} ({self.country.zones_label})")
-        if self.language:
-            parts.append(f"мова {self.language.name_uk}")
+        if self.languages:
+            label = "мова" if len(self.languages) == 1 else "мови"
+            parts.append(f"{label} {', '.join(language.name_uk for language in self.languages)}")
         # Режим «тільки зона»: пишемо всі ccTLD через «/», щоб було видно, що
         # це саме доменна зона (а не країна з водоспадом).
         if not self.country and self.zones:
