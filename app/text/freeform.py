@@ -237,6 +237,35 @@ def _extract_spam_flag(text: str) -> tuple[float | None, float | None, str]:
     return 1.0, None, text
 
 
+def find_negated_zones(text: str) -> tuple[str, ...]:
+    """Зони, ЗАПЕРЕЧЕНІ в тексті («зона не .com», «крім .fr і .de»).
+
+    Ті самі регекси заперечення, що й у _extract_zone — щоб логіка була ОДНА.
+    Потрібно санітарній сітці ШІ-шляху (app/text/sanitize.py): якщо модель усе ж
+    віддала такі зони як ПОЗИТИВНИЙ фільтр, їх треба зняти — так само, як словник
+    не робить із заперечення позитивну зону.
+    """
+    text = normalize_text(text)
+    modifier = _ZONE_MODIFIER.search(text)
+    if modifier is None:
+        return ()
+
+    stripped = text[modifier.end() :].lstrip()
+    head = stripped.split(",", 1)[0]
+    negated = bool(_ZONE_NEGATION.match(stripped)) or bool(
+        _ZONE_NEGATION_BEFORE.search(text[: modifier.start()])
+    )
+    if not negated:
+        return ()
+
+    zones: list[str] = []
+    for zone, _start, _end in find_zone_mentions(head):
+        for resolved in _zones_of(zone):
+            if resolved not in zones:
+                zones.append(resolved)
+    return tuple(zones)
+
+
 def _extract_zone(text: str) -> tuple[tuple[str, ...], str]:
     """Витягує запит «лише по зоні» з нормалізованого тексту.
 

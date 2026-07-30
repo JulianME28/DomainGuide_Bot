@@ -452,6 +452,45 @@ class TestМультиОбєктнаВідповідь:
         assert query.is_multi_country
 
 
+class TestСанітарнаСіткаШІ:
+    """Група 1: фільтр від ШІ проходить ТУ САМУ сітку, що й словниковий."""
+
+    def _interp(self, json_text: str) -> LLMInterpreter:
+        post = fake_post(anthropic_response(json_text))
+        return LLMInterpreter(AnthropicProvider("k", "m", 1, http_post=post))
+
+    async def test_інвертований_dr_через_ші_не_нуль(self):
+        q = await self._interp(
+            '{"section":"magic","country":"gb","dr_min":40,"dr_max":20}'
+        ).interpret("меджик британія DR від 40 до 20")
+        assert q is not None
+        assert q.dr_min == 40
+        assert q.dr_max is None  # інверсію погашено — не тихий нуль
+
+    async def test_заперечена_зона_через_ші_знімається(self):
+        q = await self._interp('{"section":"magic","country":"de","zones":[".com"]}').interpret(
+            "меджик німеччина у зоні не .com"
+        )
+        assert q is not None
+        assert ".com" not in q.zones  # заперечену зону знято
+        assert q.country is country_by_code("de")  # країна лишилась
+
+
+class TestПромтГрупа1:
+    def test_регіони_не_країни(self):
+        lowered = SYSTEM_PROMPT.lower()
+        assert "регіон" in lowered
+        assert "каталон" in lowered  # приклад: Каталонія ≠ Канада
+
+    def test_сторонні_числа_не_в_метрики(self):
+        lowered = SYSTEM_PROMPT.lower()
+        assert "ціна" in lowered
+        assert "топ" in lowered
+
+    def test_заперечення_не_позитивне(self):
+        assert "запереченн" in SYSTEM_PROMPT.lower()
+
+
 class TestСервіс:
     def test_вимкнено_без_ключа(self):
         settings = ai_settings(llm_api_key="")
