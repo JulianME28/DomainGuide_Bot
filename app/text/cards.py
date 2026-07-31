@@ -17,7 +17,13 @@ from __future__ import annotations
 import html
 import time
 
-from app.analytics.engine import Aggregate, CountrySplit, MultiCountryResult, QueryResult
+from app.analytics.engine import (
+    Aggregate,
+    CountryDistribution,
+    CountrySplit,
+    MultiCountryResult,
+    QueryResult,
+)
 from app.analytics.query import Dimension
 from app.analytics.recommendations import Recommendations, Suggestion
 
@@ -63,6 +69,18 @@ def plural_donors(count: int) -> str:
     if last in (2, 3, 4):
         return "донори"
     return "донорів"
+
+
+def plural_countries(count: int) -> str:
+    """Форма слова «країна»: 1 країна / 2 країни / 5 країн."""
+    if count % 100 in (11, 12, 13, 14):
+        return "країн"
+    last = count % 10
+    if last == 1:
+        return "країна"
+    if last in (2, 3, 4):
+        return "країни"
+    return "країн"
 
 
 def number(value: float | None) -> str:
@@ -612,6 +630,133 @@ def render_compact_multi_block(
         lines.append("<i>За цими параметрами донорів не знайдено.</i>")
 
     return "\n".join(lines)
+
+
+def _country_breakdown_lines(distribution: CountryDistribution, top_n: int) -> list[str]:
+    """Рядки блоку «🌍 Розбивка по країнах»: топ-N + «…та ще N» + глобальні/невідомі.
+
+    Показ обмежено топ-N, але «Разом» і «…та ще N» рахуються по ВСІХ країнах
+    (згортається лише показ). Один короткий рядок-пояснення про глобальні зони —
+    щоб не дивувало, чому сума країн менша за «Разом»."""
+    lines = [f"🌍 <b>Розбивка по країнах (топ-{top_n}):</b>"]
+    shown = distribution.countries[:top_n]
+    if not shown:
+        lines.append(
+            "  <i>Жодного донора не приписано країні (усі на глобальних/невідомих зонах).</i>"
+        )
+    for label, count in shown:
+        lines.append(f"  {escape(label)} — {number(count)}")
+
+    rest = distribution.country_count - len(shown)
+    if rest > 0:
+        rest_sum = sum(count for _label, count in distribution.countries[top_n:])
+        lines.append(
+            f"  … та ще {rest} {plural_countries(rest)} "
+            f"({number(rest_sum)} {plural_donors(rest_sum)})"
+        )
+
+    extras = []
+    if distribution.global_count:
+        extras.append(f"🌐 Глобальні зони (.com/.net…) — {number(distribution.global_count)}")
+    if distribution.unknown_count:
+        extras.append(f"❔ Зона не визначена — {number(distribution.unknown_count)}")
+    if extras:
+        lines.append("  " + "   ".join(extras))
+    if distribution.global_count:
+        lines.append(
+            "<i>ℹ️ Глобальні зони (.com/.net) не належать жодній країні — тому сума "
+            "країн менша за «Разом».</i>"
+        )
+    return lines
+
+
+def render_country_breakdown(
+    result: QueryResult,
+    distribution: CountryDistribution,
+    *,
+    top_n: int,
+    ai_explained: bool = False,
+) -> str:
+    """Картка розбивки по країнах для ОДНІЄЇ бази: топ-N + «Разом» + «…та ще N»."""
+    if not result.available:
+        return render_unavailable(result)
+
+    query_line = (
+        f"🧠 <b>ШІ зрозумів як:</b> {escape(result.section_title)}, "
+        f"{escape(result.query.describe())}"
+        if ai_explained
+        else f"🔎 <b>Запит:</b> {escape(result.query.describe())}"
+    )
+    lines = [f"🗂 <b>База:</b> {escape(result.section_title)}", query_line]
+    if result.stale:
+        lines.append("")
+        lines.append(_stale_note(result.as_of))
+    lines.append("")
+    lines.append(f"✅ <b>Разом донорів:</b> {number(distribution.total)}")
+    if result.core.count:
+        lines.extend(
+            _metrics_block(
+                result.core, tracks_spam=result.tracks_spam, spam_beyond=result.spam_beyond
+            )
+        )
+    lines.append("")
+    lines.extend(_country_breakdown_lines(distribution, top_n))
+    return "\n".join(lines)
+
+
+def render_country_breakdown_block(
+    title: str, result: QueryResult, distribution: CountryDistribution, *, top_n: int
+) -> str:
+    """Компактний блок розбивки ОДНІЄЇ бази — для зведення по обох базах."""
+    if not result.available:
+        return (
+            f"🗂 <b>{escape(title)}</b> — тимчасово недоступна.\n"
+            f"<i>{escape((result.error or '')[:150])}</i>"
+        )
+    lines = [f"🗂 <b>{escape(title)}</b>", f"✅ <b>Разом донорів:</b> {number(distribution.total)}"]
+    lines.extend(_country_breakdown_lines(distribution, top_n))
+    return "\n".join(lines)
+
+
+def render_country_list_full(
+    distribution: CountryDistribution, *, title: str, char_budget: int = 3500
+) -> list[str]:
+    """ПОВНИЙ список усіх країн (кнопка «Показати всі»), розбитий на повідомлення.
+
+    Повертає список рядків-повідомлень. Для реальних даних (≤~54 країни) це один
+    елемент; чанкер — запобіжник на дуже довгі списки (ліміт Telegram ~4096)."""
+    header = f"🌍 <b>Усі країни ({distribution.country_count}) — {escape(title)}:</b>"
+    rows = [f"  {escape(label)} — {number(count)}" for label, count in distribution.countries]
+
+    tail: list[str] = []
+    if distribution.global_count:
+        tail.append(f"🌐 Глобальні зони (.com/.net…) — {number(distribution.global_count)}")
+    if distribution.unknown_count:
+        tail.append(f"❔ Зона не визначена — {number(distribution.unknown_count)}")
+    if distribution.global_count:
+        tail.append("<i>ℹ️ Глобальні зони (.com/.net) не належать жодній країні.</i>")
+
+    chunks: list[str] = []
+    current = [header]
+    current_len = len(header)
+    for row in rows:
+        if current_len + len(row) + 1 > char_budget and len(current) > 1:
+            chunks.append("\n".join(current))
+            current, current_len = [row], len(row)
+        else:
+            current.append(row)
+            current_len += len(row) + 1
+
+    if tail:
+        tail_text = "\n".join(tail)
+        if current_len + len(tail_text) + 2 > char_budget and len(current) > 1:
+            chunks.append("\n".join(current))
+            current = [tail_text]
+        else:
+            current.append("")
+            current.append(tail_text)
+    chunks.append("\n".join(current))
+    return chunks
 
 
 def render_both_bases(query, blocks: list[str], *, explicit_both: bool = False) -> str:

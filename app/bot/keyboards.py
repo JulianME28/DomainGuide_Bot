@@ -109,6 +109,7 @@ def result_menu(
     has_country: bool = False,
     run_in: tuple[str, str] | None = None,
     ai_retry: bool = False,
+    all_countries: bool = False,
 ) -> InlineKeyboardMarkup:
     """Кнопки під карткою результату (ТЗ, розділ 25).
 
@@ -131,6 +132,9 @@ def result_menu(
         )
     if has_country:
         builder.button(text="🔗 Тільки доменна зона", callback_data="res:zoneonly")
+    # Розбивка по країнах: кнопка «показати всі» (коли картка — це розбивка).
+    if all_countries:
+        builder.button(text="🌍 Показати всі країни", callback_data="res:allcountries")
     builder.button(text="🌍 Уточнити гео в цій групі", callback_data="res:geo")
     builder.button(text="🗣 Розподіл по мовах", callback_data="res:lang")
     builder.button(text="➕ Додати фільтр", callback_data="res:filter")
@@ -139,25 +143,33 @@ def result_menu(
 
     # Усі кнопки по одній у рядок, крім останньої пари («Новий запит» + «До меню»).
     singles = (
-        3 + int(has_recommendations) + int(has_country) + int(run_in is not None) + int(ai_retry)
+        3
+        + int(has_recommendations)
+        + int(has_country)
+        + int(run_in is not None)
+        + int(ai_retry)
+        + int(all_countries)
     )
     builder.adjust(*([1] * singles), 2)
     return builder.as_markup()
 
 
 def both_bases_menu(
-    bases: list[tuple[str, str]], *, ai_retry: bool = False
+    bases: list[tuple[str, str]], *, ai_retry: bool = False, country_breakdown: bool = False
 ) -> InlineKeyboardMarkup:
     """Кнопки під зведеним повідомленням по обох базах.
 
-    bases — список (ключ, назва). Для кожної — кнопка «Детально по …», що
-    відкриває повну картку саме цієї бази з усіма додатковими блоками.
+    bases — список (ключ, назва). За замовчуванням — «Детально по …» (повна картка
+    бази); для розбивки по країнах (country_breakdown=True) — «Всі країни: …».
     ai_retry — чи додати «🧠 Уточнити через ШІ» (коли частину запиту не зрозуміли)."""
     builder = InlineKeyboardBuilder()
     if ai_retry:
         builder.button(text="🧠 Уточнити через ШІ", callback_data="ai:retry")
     for key, title in bases:
-        builder.button(text=f"📊 Детально по {title}", callback_data=f"res:detail:{key}")
+        if country_breakdown:
+            builder.button(text=f"🌍 Всі країни: {title}", callback_data=f"res:allcountries:{key}")
+        else:
+            builder.button(text=f"📊 Детально по {title}", callback_data=f"res:detail:{key}")
     builder.button(text="⬅️ До меню", callback_data="menu:main")
     builder.adjust(*([1] * (len(bases) + int(ai_retry))), 1)
     return builder.as_markup()

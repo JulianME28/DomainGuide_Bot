@@ -646,16 +646,15 @@ def language_breakdown(donors: list[Donor], limit: int = 8) -> tuple[tuple[str, 
     return tuple((display_language(value), count) for value, count in counter.most_common(limit))
 
 
-def country_breakdown(donors: list[Donor], limit: int = 8) -> tuple[tuple[str, int], ...]:
-    """Розподіл групи по країнах — виводиться з доменних зон.
+def _group_by_country(donors: list[Donor]) -> tuple[Counter[str], int, int]:
+    """Групує донорів по країні (за доменною зоною): (лічильник, глобальні, невідомі).
 
-    Глобальні зони (.com, .net) зводяться в окремий рядок і НЕ приписуються
-    жодній країні. Це принципово: сайт на .com може бути звідки завгодно.
+    Глобальні зони (.com, .net) НЕ приписуються жодній країні — сайт на .com може
+    бути звідки завгодно. Спільна основа для country_breakdown і country_distribution.
     """
     counter: Counter[str] = Counter()
     global_count = 0
     unknown_count = 0
-
     for donor in donors:
         if not donor.zone:
             unknown_count += 1
@@ -669,13 +668,62 @@ def country_breakdown(donors: list[Donor], limit: int = 8) -> tuple[tuple[str, i
             unknown_count += 1
             continue
         counter[f"{country.flag} {country.name_uk}"] += 1
+    return counter, global_count, unknown_count
 
+
+def country_breakdown(donors: list[Donor], limit: int = 8) -> tuple[tuple[str, int], ...]:
+    """Розподіл групи по країнах (обмежений `limit`) — для кнопки «Уточнити гео».
+
+    Глобальні/невідомі зони зводяться в окремі рядки й НЕ приписуються країні.
+    """
+    counter, global_count, unknown_count = _group_by_country(donors)
     rows = list(counter.most_common(limit))
     if global_count:
         rows.append(("🌐 Глобальні зони (без країни)", global_count))
     if unknown_count:
         rows.append(("❔ Зона не визначена", unknown_count))
     return tuple(rows)
+
+
+@dataclass(frozen=True, slots=True)
+class CountryDistribution:
+    """ПОВНА розбивка по країнах під фільтр — самі числа, без жодного домену.
+
+    countries — УСІ країни (прапор+назва, к-сть), відсортовані за спаданням.
+    Показ обмежується згори (топ-N) уже в шарі відображення; підрахунок — завжди
+    по всіх. total — усього донорів під фільтр («Разом»); global_count/unknown_count —
+    донори на глобальних (.com/.net) і невизначених зонах (не належать країні).
+    """
+
+    countries: tuple[tuple[str, int], ...]
+    global_count: int
+    unknown_count: int
+    total: int
+
+    @property
+    def country_count(self) -> int:
+        """Скільки РІЗНИХ країн у розбивці (для рядка «…та ще N країн»)."""
+        return len(self.countries)
+
+
+def country_distribution(dataset: Dataset, query: DonorQuery) -> CountryDistribution:
+    """Рахує ПОВНУ розбивку по країнах під фільтр запиту. Тільки числа.
+
+    Реюз тієї самої моделі, що й підсумок запиту (_country_total_donors), тож
+    «Разом» тут збігається з «Знайдено донорів» у звичайній картці. Донори з
+    функції не виходять — назовні лише кількості по країнах (межа безпеки §2.2).
+    """
+    if not dataset.available:
+        return CountryDistribution((), 0, 0, 0)
+    query = normalize_query(dataset, query)
+    donors = _country_total_donors(dataset, query)
+    counter, global_count, unknown_count = _group_by_country(donors)
+    return CountryDistribution(
+        countries=tuple(counter.most_common()),
+        global_count=global_count,
+        unknown_count=unknown_count,
+        total=len(donors),
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -20,6 +20,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 from app.analytics.engine import (
     MAX_MULTI_COUNTRIES,
     QueryResult,
+    country_distribution,
     run_multi_country,
     run_query,
     unsupported_dimensions,
@@ -40,6 +41,8 @@ from app.text.cards import (
     render_both_bases,
     render_compact_block,
     render_compact_multi_block,
+    render_country_breakdown,
+    render_country_breakdown_block,
     render_multi_country,
     render_multi_summary,
     render_result,
@@ -50,6 +53,10 @@ from app.text.freeform import parse_free_text
 logger = get_logger(__name__)
 
 STATUS_TEXT = "⏳ Рахую..."
+
+# Скільки країн показувати в розбивці за замовчуванням (решта — за кнопкою
+# «Показати всі країни»). Параметр: змінити тут — і зміниться всюди.
+COUNTRY_BREAKDOWN_TOP_N = 8
 
 
 @dataclass(frozen=True, slots=True)
@@ -330,6 +337,73 @@ def _compute_multi(dataset, query: DonorQuery):
     return result, suggestions
 
 
+def _compute_breakdown(dataset, query: DonorQuery):
+    """Синхронна частина розбивки: результат (для шапки/середніх) + повна розбивка
+    по країнах (числа). В окремому потоці."""
+    return run_query(dataset, query, with_breakdowns=False), country_distribution(dataset, query)
+
+
+async def show_country_breakdown(
+    target: Message | CallbackQuery,
+    services: BotServices,
+    query: DonorQuery,
+    user_id: int,
+    *,
+    both: bool,
+    ai_explained: bool = False,
+) -> None:
+    """Розбивка по країнах: топ-N + «Разом» + «…та ще N», з кнопкою «показати всі».
+
+    Для однієї названої бази — повна картка розбивки; коли базу не назвали (both) —
+    зведення по обох базах, кожна зі своєю розбивкою й кнопкою «Всі країни: …».
+    Назовні йдуть лише кількості по країнах — доменів рушій не віддає (§2.2)."""
+    message = target.message if isinstance(target, CallbackQuery) else target
+    if message is None:
+        raise RuntimeError("Немає повідомлення, у яке можна відповісти")
+
+    status = await message.answer(STATUS_TEXT)
+    try:
+        if both:
+            bases = data_bases(services)
+            blocks: list[str] = []
+            for key, title in bases:
+                dataset = await services.repository.get(key)
+                result, dist = await asyncio.to_thread(
+                    _compute_breakdown, dataset, query.replace(section_key=key)
+                )
+                blocks.append(
+                    render_country_breakdown_block(
+                        title, result, dist, top_n=COUNTRY_BREAKDOWN_TOP_N
+                    )
+                )
+            services.action_log.add(
+                user_id, f"розбивка по країнах (обидві бази): {query.describe()}"
+            )
+            await status.edit_text(
+                render_both_bases(query, blocks),
+                reply_markup=both_bases_menu(bases, country_breakdown=True),
+            )
+            return
+
+        dataset = await services.repository.get(query.section_key)
+        result, dist = await asyncio.to_thread(_compute_breakdown, dataset, query)
+    except Exception:
+        logger.exception("Не вдалося порахувати розбивку по країнах")
+        await status.edit_text(
+            "⚠️ Не вдалося виконати запит. Спробуйте ще раз або почніть спочатку: /start",
+            reply_markup=back_to_menu(),
+        )
+        return
+
+    services.action_log.add(user_id, f"розбивка по країнах: {render_summary(result)}")
+    await status.edit_text(
+        render_country_breakdown(
+            result, dist, top_n=COUNTRY_BREAKDOWN_TOP_N, ai_explained=ai_explained
+        ),
+        reply_markup=result_menu(query.section_key, has_recommendations=False, all_countries=True),
+    )
+
+
 async def resolve_with_ai(services: BotServices, user_id: int, text: str) -> AIOutcome | None:
     """Резервний розбір через ШІ — лише коли ШІ ввімкнено (є ключ).
 
@@ -526,6 +600,17 @@ async def run_ai_query(
     # на кожну базу), тож guard на multi-country знято — «меджик і морди британія
     # і німеччина» через ШІ дає обидві бази × обидві країни.
     parsed = parse_free_text(text.strip())
+    # Розбивка по країнах, якщо в тексті є слово-сигнал («які країни», «по країнах»).
+    if parsed.wants_country_breakdown and not query.is_multi_country:
+        await show_country_breakdown(
+            message,
+            services,
+            query,
+            user_id,
+            both=parsed.both_bases or not parsed.section_named,
+            ai_explained=True,
+        )
+        return
     if parsed.both_bases:
         await show_both_bases(message, services, query, user_id, explicit_both=True)
         return

@@ -119,6 +119,16 @@ _BOTH_BASES = re.compile(
 # «скільки всього», «всього», «сумарно», «разом», «загалом».
 _SUMMARY = re.compile(r"\b(?:скільки\s+всього|всього|сумарно|разом|загалом)\b")
 
+# Слова-СИГНАЛ «розбивка по країнах»: просять показати розподіл донорів по країнах,
+# а не одне число. Параметр (легко доповнити), не магічний рядок у коді.
+# «які країни», «в яких країнах», «по країнах», «розбивка/розподіл по країнах»,
+# «де є донори», «з яких країн», «розбий по країнах».
+_COUNTRY_BREAKDOWN = re.compile(
+    r"(?:як(?:і|их)\s+країн\w*|в\s+як\w+\s+країн\w*|по\s+країн\w*|розбивк\w*"
+    r"|розпод\w*\s+по\s+країн\w*|розбий\w*\s+по\s+країн\w*|з\s+як\w+\s+країн\w*"
+    r"|де\s+є\s+донор\w*)"
+)
+
 # Опис списку країн через МОВНУ ознаку: «англомовні країни», «всі іспаномовні».
 # Це лише опис для рядка «Запит:», НЕ фільтр — самі країни задані переліком.
 _LANG_COUNTRY_DESC = re.compile(r"([а-яіїєґ]+мов)н\w*\s+країн|вс[іео]\w*\s+([а-яіїєґ]+мов)н")
@@ -416,6 +426,11 @@ class ParsedQuery:
     зведення показує підсумок завжди; цей прапорець робить «зрозумілим» навіть
     голий запит на кшталт «скільки всього», де інших фільтрів немає."""
 
+    wants_country_breakdown: bool = False
+    """Чи просили РОЗБИВКУ по країнах («які країни», «по країнах»). Тоді замість
+    одного числа показуємо топ-N країн + «Разом» + «…та ще N», з кнопкою «показати
+    всі». Це прохання про ПОКАЗ, не фільтр — детектується словом-сигналом у тексті."""
+
     @property
     def needs_clarification(self) -> bool:
         return not self.understood
@@ -446,6 +461,8 @@ def parse_free_text(text: str, *, default_section: str = "magic") -> ParsedQuery
     both_bases = _BOTH_BASES.search(normalized) is not None
     plus_bases = _PLUS_BASES.search(normalized) is not None
     want_total = plus_bases or _SUMMARY.search(normalized) is not None
+    # Сигнал «розбивка по країнах» — на свіжому тексті, до затирання вимірів.
+    wants_country_breakdown = _COUNTRY_BREAKDOWN.search(normalized) is not None
     # Опис списку через мовну ознаку («англомовні країни») — на свіжому тексті,
     # доки слово-ознаку не затерли пізніші кроки розбору.
     countries_note = _language_country_label(normalized)
@@ -558,6 +575,7 @@ def parse_free_text(text: str, *, default_section: str = "magic") -> ParsedQuery
             unrecognized=unrecognized,
             both_bases=both_bases,
             want_total=want_total,
+            wants_country_breakdown=wants_country_breakdown,
         )
 
     query = DonorQuery(
@@ -603,7 +621,14 @@ def parse_free_text(text: str, *, default_section: str = "magic") -> ParsedQuery
     # Скасування — теж зрозумілий намір, а не «нічого не зрозуміло». Прохання
     # показати альтернативи, перелік баз чи слово-підсумок — теж намір (навіть
     # без інших фільтрів).
-    understood = bool(mentioned or section_named or request_marker or both_bases or want_total)
+    understood = bool(
+        mentioned
+        or section_named
+        or request_marker
+        or both_bases
+        or want_total
+        or wants_country_breakdown
+    )
 
     return ParsedQuery(
         query=query,
@@ -615,6 +640,7 @@ def parse_free_text(text: str, *, default_section: str = "magic") -> ParsedQuery
         request_marker=request_marker,
         both_bases=both_bases,
         want_total=want_total,
+        wants_country_breakdown=wants_country_breakdown,
     )
 
 

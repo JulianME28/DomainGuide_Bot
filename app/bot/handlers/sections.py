@@ -6,11 +6,14 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
+from app.analytics.engine import country_distribution
 from app.analytics.query import DonorQuery
 from app.bot.context import BotServices
 from app.bot.execution import (
@@ -19,6 +22,7 @@ from app.bot.execution import (
     resolve_with_ai,
     safe_edit,
     show_both_bases,
+    show_country_breakdown,
     show_result,
 )
 from app.bot.keyboards import (
@@ -39,7 +43,7 @@ from app.dictionary.resolver import (
     hint_for_language_mode,
     resolve_language,
 )
-from app.text.cards import render_breakdown, render_recommendations
+from app.text.cards import render_breakdown, render_country_list_full, render_recommendations
 from app.text.freeform import parse_free_text
 from app.text.prompts import cross_mode_prompt
 
@@ -351,6 +355,17 @@ async def receive_free_text(message: Message, services: BotServices, state: FSMC
             await message.answer(EMPTY_QUERY_HINT, reply_markup=cancel_only())
             return
 
+    # Розбивка по країнах на запит зі словом-сигналом («які країни», «по країнах»).
+    if parsed.wants_country_breakdown and not parsed.query.is_multi_country:
+        await show_country_breakdown(
+            message,
+            services,
+            parsed.query,
+            message.from_user.id,
+            both=parsed.both_bases or not parsed.section_named,
+        )
+        return
+
     # Зведено по обох базах, коли базу не назвали явно АБО назвали переліком
     # («(Меджик + Морди)», «в обох базах»). Список країн БІЛЬШЕ не виняток
     # (пункт III): show_both_bases сам рахує мультикраїнну модель на кожну базу.
@@ -517,3 +532,46 @@ async def add_filter(callback: CallbackQuery, state: FSMContext) -> None:
         wizard_traffic(),
     )
     await callback.answer()
+
+
+async def _send_country_list(
+    callback: CallbackQuery, services: BotServices, query: DonorQuery
+) -> None:
+    """Повний список країн — одним чи кількома повідомленнями (чанкер запобіжник)."""
+    dataset = await services.repository.get(query.section_key)
+    dist = await asyncio.to_thread(country_distribution, dataset, query)
+    chunks = render_country_list_full(dist, title=services.section_title(query.section_key))
+    if callback.message is None:
+        return
+    for index, chunk in enumerate(chunks):
+        last = index == len(chunks) - 1
+        await callback.message.answer(
+            chunk, reply_markup=result_menu(query.section_key) if last else None
+        )
+
+
+@router.callback_query(F.data == "res:allcountries")
+async def show_all_countries(
+    callback: CallbackQuery, services: BotServices, state: FSMContext
+) -> None:
+    """«Показати всі країни» під карткою розбивки (одна база)."""
+    query = await _current_query(state)
+    if query is None:
+        await callback.answer("Спочатку зробіть запит", show_alert=True)
+        return
+    await callback.answer()
+    await _send_country_list(callback, services, query)
+
+
+@router.callback_query(F.data.startswith("res:allcountries:"))
+async def show_all_countries_base(
+    callback: CallbackQuery, services: BotServices, state: FSMContext
+) -> None:
+    """«Всі країни: X» під зведенням по обох базах — повний список саме цієї бази."""
+    section_key = callback.data.split(":")[2]
+    query = await _current_query(state)
+    if query is None:
+        await callback.answer("Спочатку зробіть запит", show_alert=True)
+        return
+    await callback.answer()
+    await _send_country_list(callback, services, query.replace(section_key=section_key))

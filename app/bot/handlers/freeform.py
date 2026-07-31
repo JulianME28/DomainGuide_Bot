@@ -20,6 +20,7 @@ from app.bot.execution import (
     AI_CHAT_FAILED_TEXT,
     resolve_with_ai,
     show_both_bases,
+    show_country_breakdown,
     show_result,
 )
 from app.bot.keyboards import ai_retry_menu, back_to_menu, cancel_only
@@ -101,6 +102,18 @@ async def handle_free_text(message: Message, services: BotServices, state: FSMCo
         if not parsed.section_named:
             await message.answer(EMPTY_QUERY_HINT, reply_markup=back_to_menu())
             return
+
+    # Розбивка по країнах на запит зі словом-сигналом («які країни», «по країнах»)
+    # без переліку конкретних країн: топ-N + «Разом» + «…та ще N» + кнопка «всі».
+    if parsed.wants_country_breakdown and not parsed.query.is_multi_country:
+        await show_country_breakdown(
+            message,
+            services,
+            parsed.query,
+            message.from_user.id,
+            both=parsed.both_bases or not parsed.section_named,
+        )
+        return
 
     # Зведення по обох базах, коли базу не назвали ЯВНО, або коли її назвали
     # переліком («(Меджик + Морди)», «в обох базах»). Список країн БІЛЬШЕ не виняток
