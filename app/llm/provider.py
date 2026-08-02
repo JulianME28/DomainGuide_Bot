@@ -82,6 +82,8 @@ class LLMProvider(Protocol):
 
     async def complete(self, system: str, user_text: str) -> str: ...
 
+    async def complete_chat(self, system: str, messages: list[dict]) -> str: ...
+
 
 def _default_http_post(url: str, headers: dict[str, str], body: dict, timeout: float) -> dict:
     """Реальний HTTP POST через стандартну бібліотеку (без зайвих залежностей).
@@ -101,10 +103,11 @@ def _default_http_post(url: str, headers: dict[str, str], body: dict, timeout: f
 # формат запиту не розповзався по коду.
 
 
-def anthropic_request(
-    api_key: str, model: str, system: str, user_text: str, max_tokens: int
+def anthropic_chat_request(
+    api_key: str, model: str, system: str, messages: list[dict], max_tokens: int
 ) -> tuple[str, dict[str, str], dict]:
-    """(url, headers, body) для Anthropic Messages API."""
+    """(url, headers, body) для Anthropic Messages API з ПОВНИМ списком повідомлень
+    (для багатоходового діалогу консультанта). System — окремим полем."""
     headers = {
         "x-api-key": api_key,
         "anthropic-version": ANTHROPIC_VERSION,
@@ -114,18 +117,16 @@ def anthropic_request(
         "model": model,
         "max_tokens": max_tokens,
         "system": system,
-        "messages": [{"role": "user", "content": user_text}],
+        "messages": messages,
     }
     return ANTHROPIC_URL, headers, body
 
 
-def openai_request(
-    api_key: str, model: str, system: str, user_text: str, max_tokens: int
+def openai_chat_request(
+    api_key: str, model: str, system: str, messages: list[dict], max_tokens: int
 ) -> tuple[str, dict[str, str], dict]:
-    """(url, headers, body) для OpenAI Chat Completions API.
-
-    `system` іде окремим повідомленням role=system, `max_completion_tokens` —
-    новіша (сумісна з новими моделями) назва обмеження довжини відповіді."""
+    """(url, headers, body) для OpenAI Chat Completions API з ПОВНИМ списком
+    повідомлень. System — першим повідомленням role=system."""
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
@@ -133,12 +134,27 @@ def openai_request(
     body = {
         "model": model,
         "max_completion_tokens": max_tokens,
-        "messages": [
-            {"role": "system", "content": system},
-            {"role": "user", "content": user_text},
-        ],
+        "messages": [{"role": "system", "content": system}, *messages],
     }
     return OPENAI_URL, headers, body
+
+
+def anthropic_request(
+    api_key: str, model: str, system: str, user_text: str, max_tokens: int
+) -> tuple[str, dict[str, str], dict]:
+    """(url, headers, body) для одного user-повідомлення — фільтровий шлях."""
+    return anthropic_chat_request(
+        api_key, model, system, [{"role": "user", "content": user_text}], max_tokens
+    )
+
+
+def openai_request(
+    api_key: str, model: str, system: str, user_text: str, max_tokens: int
+) -> tuple[str, dict[str, str], dict]:
+    """(url, headers, body) для одного user-повідомлення — фільтровий шлях."""
+    return openai_chat_request(
+        api_key, model, system, [{"role": "user", "content": user_text}], max_tokens
+    )
 
 
 async def _post_json(
@@ -187,6 +203,14 @@ class AnthropicProvider:
         data = await _post_json(self._http_post, url, headers, body, self._timeout)
         return _extract_anthropic_text(data, self._max_tokens)
 
+    async def complete_chat(self, system: str, messages: list[dict]) -> str:
+        """Багатоходовий діалог: system + ПОВНИЙ список повідомлень → текст."""
+        url, headers, body = anthropic_chat_request(
+            self._api_key, self.model, system, messages, self._max_tokens
+        )
+        data = await _post_json(self._http_post, url, headers, body, self._timeout)
+        return _extract_anthropic_text(data, self._max_tokens)
+
     def __repr__(self) -> str:
         # Ключ у repr не потрапляє — лише модель.
         return f"AnthropicProvider(model={self.model!r})"
@@ -217,6 +241,14 @@ class OpenAIProvider:
     async def complete(self, system: str, user_text: str) -> str:
         url, headers, body = openai_request(
             self._api_key, self.model, system, user_text, self._max_tokens
+        )
+        data = await _post_json(self._http_post, url, headers, body, self._timeout)
+        return _extract_openai_text(data, self._max_tokens)
+
+    async def complete_chat(self, system: str, messages: list[dict]) -> str:
+        """Багатоходовий діалог: system + ПОВНИЙ список повідомлень → текст."""
+        url, headers, body = openai_chat_request(
+            self._api_key, self.model, system, messages, self._max_tokens
         )
         data = await _post_json(self._http_post, url, headers, body, self._timeout)
         return _extract_openai_text(data, self._max_tokens)

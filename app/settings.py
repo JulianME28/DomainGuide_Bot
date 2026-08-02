@@ -55,6 +55,9 @@ class Settings:
     # Ліміт токенів на відповідь ШІ. Запас потрібен, бо reasoning-моделі
     # витрачають частину на «міркування» — інакше JSON обірветься.
     llm_max_tokens: int = 800
+    # Ліміт токенів РОЗМОВНОЇ смуги (консультант відповідає довше за фільтр-JSON).
+    # Помірний навмисно: довші відповіді + сильніша модель = дорожчі виклики.
+    llm_chat_max_tokens: int = 1200
 
     @property
     def llm_enabled(self) -> bool:
@@ -224,4 +227,7 @@ def load_settings(env_file: str | Path | None = None, *, require_token: bool = T
             os.getenv("LLM_WINDOW_SECONDS", ""), "LLM_WINDOW_SECONDS", 3600
         ),
         llm_max_tokens=_parse_int(os.getenv("LLM_MAX_TOKENS", ""), "LLM_MAX_TOKENS", 800),
+        llm_chat_max_tokens=_parse_int(
+            os.getenv("LLM_CHAT_MAX_TOKENS", ""), "LLM_CHAT_MAX_TOKENS", 1200
+        ),
     )

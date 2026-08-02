@@ -18,6 +18,8 @@ from aiogram.types import InlineKeyboardMarkup, Message
 from app.bot.context import BotServices
 from app.bot.execution import (
     AI_CHAT_FAILED_TEXT,
+    chat_reply,
+    reset_chat_history,
     resolve_with_ai,
     show_both_bases,
     show_country_breakdown,
@@ -64,9 +66,10 @@ async def handle_free_text(message: Message, services: BotServices, state: FSMCo
             await state.update_data(**query_to_state(outcome.query))
             await show_result(message, services, outcome.query, message.from_user.id)
             return
-        # Фільтра нема, але це РОЗМОВНЕ питання → окрема смуга (без доступу до даних).
+        # Фільтра нема, але це РОЗМОВНЕ питання → консультант (без доступу до даних),
+        # з контекстом розмови у FSM.
         if outcome is not None and outcome.intent == "question":
-            answer = await services.ai.answer_question(message.from_user.id, text)
+            answer = await chat_reply(services, state, message.from_user.id, text)
             await message.answer(
                 f"🧠 {escape(answer)}" if answer else AI_CHAT_FAILED_TEXT,
                 reply_markup=back_to_menu(),
@@ -84,8 +87,10 @@ async def handle_free_text(message: Message, services: BotServices, state: FSMCo
         return
 
     # Новий вільний запит замінює попередній повністю: свіжим вважається
-    # рівно те, про що сказали в цьому повідомленні.
+    # рівно те, про що сказали в цьому повідомленні. Донор-запит скидає контекст
+    # консультанта — розмова й підрахунок не змішуються.
     await state.update_data(**query_to_state(parsed.query, parsed.mentioned))
+    await reset_chat_history(state)
 
     # Порожній запит без валідного фільтра — базу НЕ вивалюємо.
     if not parsed.query.is_multi_country and parsed.query.is_empty:

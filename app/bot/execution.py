@@ -465,6 +465,39 @@ AI_CHAT_FAILED_TEXT = (
     "скористайтеся кнопками меню — /start."
 )
 
+# Скільки ОСТАННІХ повідомлень діалогу тримати в контексті консультанта
+# (≈3 обміни). Багатоходовість несе всю історію в кожному виклику, тож коротко.
+CHAT_HISTORY_MESSAGES = 6
+
+
+async def reset_chat_history(state) -> None:
+    """Скидає контекст консультанта. Кличеться на донор-запиті, щоб консультація
+    й підрахунок НЕ змішувались в один контекст (і дешевше по токенах)."""
+    if state is not None:
+        await state.update_data(chat_history=[])
+
+
+async def chat_reply(services: BotServices, state, user_id: int, text: str) -> str | None:
+    """Відповідь консультанта з контекстом розмови у FSM.
+
+    Історія тримається в межах БЕЗПЕРЕРВНОЇ розмови (донор-запит її скидає через
+    reset_chat_history) і обрізається до останніх CHAT_HISTORY_MESSAGES. None —
+    коли смуга не змогла (ліміт/збій). Смуга даних не бачить (app/llm/chat.py)."""
+    data = await state.get_data() if state is not None else {}
+    history = data.get("chat_history") or []
+    answer = await services.ai.answer_question(user_id, text, history)
+    if answer is None:
+        return None
+    if state is not None:
+        new_history = [
+            *history,
+            {"role": "user", "content": text},
+            {"role": "assistant", "content": answer},
+        ]
+        await state.update_data(chat_history=new_history[-CHAT_HISTORY_MESSAGES:])
+    return answer
+
+
 # Причина невдачі ШІ (AIOutcome.reason) → повідомлення користувачу. Показується
 # ЛИШЕ коли й словниковий резерв не зрозумів запит (див. run_ai_query).
 _AI_REASON_TEXT = {
@@ -554,7 +587,7 @@ async def run_ai_query(
         # прямо сказала intent=question; на збої/ліміті intent лишається filter.
         if outcome.intent == "question":
             logger.info("Маршрут ШІ (користувач %s): розмовна смуга", user_id)
-            answer = await services.ai.answer_question(user_id, text.strip())
+            answer = await chat_reply(services, state, user_id, text.strip())
             await message.answer(
                 f"🧠 {escape(answer)}" if answer else AI_CHAT_FAILED_TEXT,
                 reply_markup=back_to_menu(),
@@ -585,8 +618,10 @@ async def run_ai_query(
     query = outcome.query
 
     # Розпізнане ШІ стає активним запитом (як звичайний), стан скидаємо.
+    # Донор-запит скидає контекст консультанта: розмова й підрахунок не змішуються.
     await state.set_state(None)
     await state.update_data(**query_to_state(query))
+    await reset_chat_history(state)
     # Прибираємо статус «Питаю ШІ...» і показуємо картку окремим повідомленням.
     await _delete_or_ignore(status)
 

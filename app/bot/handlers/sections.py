@@ -18,7 +18,9 @@ from app.analytics.query import DonorQuery
 from app.bot.context import BotServices
 from app.bot.execution import (
     AI_CHAT_FAILED_TEXT,
+    chat_reply,
     execute,
+    reset_chat_history,
     resolve_with_ai,
     safe_edit,
     show_both_bases,
@@ -133,6 +135,7 @@ async def query_country(callback: CallbackQuery, services: BotServices, state: F
     # щоб наступний текст не потрапив у старий крок.
     await state.set_state(None)
     await state.update_data(**query_to_state(query))
+    await reset_chat_history(state)
     await callback.answer()
     await show_result(callback, services, query, callback.from_user.id)
 
@@ -149,6 +152,7 @@ async def query_language(callback: CallbackQuery, services: BotServices, state: 
     query = DonorQuery(section_key=section_key, languages=(language,))
     await state.set_state(None)
     await state.update_data(**query_to_state(query))
+    await reset_chat_history(state)
     await callback.answer()
     await show_result(callback, services, query, callback.from_user.id)
 
@@ -311,11 +315,11 @@ async def receive_free_text(message: Message, services: BotServices, state: FSMC
             await state.update_data(**query_to_state(outcome.query))
             await show_result(message, services, outcome.query, message.from_user.id)
             return
-        # Розмовне питання → окрема смуга (без доступу до даних).
+        # Розмовне питання → консультант (без доступу до даних), з контекстом у FSM.
         if outcome is not None and outcome.intent == "question":
             from app.text.cards import escape
 
-            answer = await services.ai.answer_question(message.from_user.id, text)
+            answer = await chat_reply(services, state, message.from_user.id, text)
             await message.answer(
                 f"🧠 {escape(answer)}" if answer else AI_CHAT_FAILED_TEXT,
                 reply_markup=back_to_menu(),
@@ -337,7 +341,9 @@ async def receive_free_text(message: Message, services: BotServices, state: FSMC
         return
 
     await state.set_state(None)
+    # Донор-запит скидає контекст консультанта (розмова й підрахунок не змішуються).
     await state.update_data(**query_to_state(parsed.query, parsed.mentioned))
+    await reset_chat_history(state)
 
     # Порожній запит без валідного фільтра — базу НЕ вивалюємо.
     if not parsed.query.is_multi_country and parsed.query.is_empty:

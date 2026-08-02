@@ -13,7 +13,14 @@ from pathlib import Path
 import app.llm.chat as chat_module
 from app.analytics.query import DonorQuery
 from app.bot.context import ActionLog, BotServices
-from app.bot.execution import AI_CHAT_FAILED_TEXT, AI_EMPTY_TEXT, run_ai_query
+from app.bot.execution import (
+    AI_CHAT_FAILED_TEXT,
+    AI_EMPTY_TEXT,
+    CHAT_HISTORY_MESSAGES,
+    chat_reply,
+    reset_chat_history,
+    run_ai_query,
+)
 from app.data.repository import DonorRepository
 from app.dictionary.countries import country_by_code
 from app.llm.chat import CHAT_SYSTEM_PROMPT, ConversationResponder
@@ -82,16 +89,37 @@ class TestВідмоваUX:
             def __init__(self):
                 self.calls = []
 
-            async def complete(self, system, user_text):
-                self.calls.append((system, user_text))
+            async def complete_chat(self, system, messages):
+                self.calls.append((system, messages))
                 return "Заспамленість — це кількість заспамлених вихідних лінків."
 
         provider = FakeProvider()
         responder = ConversationResponder(provider)
-        answer = await responder.answer("що таке заспамленість?")
+        answer = await responder.answer([], "що таке заспамленість?")
         assert "заспамлен" in answer.lower()
         # Провайдер отримав САМЕ розмовний промт (data-free), а не фільтровий.
         assert provider.calls[0][0] is CHAT_SYSTEM_PROMPT
+
+    async def test_responder_несе_історію_діалогу(self):
+        """Багатоходовість: попередні репліки йдуть у виклик разом із питанням."""
+
+        class FakeProvider:
+            def __init__(self):
+                self.messages = None
+
+            async def complete_chat(self, system, messages):
+                self.messages = messages
+                return "Порада…"
+
+        provider = FakeProvider()
+        history = [
+            {"role": "user", "content": "порадь гео"},
+            {"role": "assistant", "content": "США і Британія популярні"},
+        ]
+        await ConversationResponder(provider).answer(history, "а Німеччина?")
+        # У виклик пішла історія + нове питання останнім.
+        assert provider.messages[0]["content"] == "порадь гео"
+        assert provider.messages[-1] == {"role": "user", "content": "а Німеччина?"}
 
 
 # ---------------------------------------------------------------------------
@@ -193,8 +221,8 @@ class FakeAI:
     async def try_interpret(self, user_id: int, text: str):
         return self._outcome.query
 
-    async def answer_question(self, user_id: int, text: str) -> str | None:
-        self.answer_calls.append((user_id, text))
+    async def answer_question(self, user_id: int, text: str, history=()) -> str | None:
+        self.answer_calls.append((user_id, text, list(history)))
         return self._answer
 
 
@@ -269,3 +297,57 @@ class TestМаршрутизаціяЧат:
 
         assert ai.answer_calls
         assert AI_CHAT_FAILED_TEXT in _all_texts(message)
+
+
+class TestБагатоходовість:
+    """Контекст розмови тримається в FSM, скидається на донор-запиті, обрізається."""
+
+    async def test_історія_накопичується_між_ходами(self, columns_config):
+        ai = FakeAI(AIOutcome(None, "empty", intent="question"), answer="США і Британія")
+        services = _services(columns_config, ai)
+        state = FakeState()
+
+        await chat_reply(services, state, 1, "порадь гео")
+        await chat_reply(services, state, 1, "а Німеччина?")
+
+        # Другий виклик отримав історію першого обміну.
+        _uid, _text, history2 = ai.answer_calls[1]
+        contents = [m["content"] for m in history2]
+        assert "порадь гео" in contents
+        assert "США і Британія" in contents
+
+    async def test_донор_запит_скидає_контекст(self, columns_config):
+        ai = FakeAI(AIOutcome(None, "empty", intent="question"), answer="відповідь")
+        services = _services(columns_config, ai)
+        state = FakeState()
+
+        await chat_reply(services, state, 1, "порадь гео")
+        await reset_chat_history(state)  # ← між питаннями був донор-запит
+        await chat_reply(services, state, 1, "нове питання")
+
+        _uid, _text, history_last = ai.answer_calls[-1]
+        assert history_last == []  # консультація й підрахунок не змішались
+
+    async def test_історія_обрізається_до_ліміту(self, columns_config):
+        ai = FakeAI(AIOutcome(None, "empty", intent="question"), answer="ok")
+        services = _services(columns_config, ai)
+        state = FakeState()
+
+        for i in range(10):
+            await chat_reply(services, state, 1, f"питання {i}")
+
+        data = await state.get_data()
+        assert len(data["chat_history"]) <= CHAT_HISTORY_MESSAGES
+
+
+class TestПромтКонсультанта:
+    def test_персона_консультанта_і_уточнення(self):
+        lowered = CHAT_SYSTEM_PROMPT.lower()
+        assert "консультант" in lowered
+        assert "радь" in lowered  # радить стратегії
+        assert "уточн" in lowered  # ставить уточнюючі питання
+
+    def test_направляє_на_донор_запит_замість_вигаданого_числа(self):
+        lowered = CHAT_SYSTEM_PROMPT.lower()
+        assert "не називай число" in lowered  # не вигадує кількість
+        assert "порахую" in lowered  # приклад перенаправлення на запит

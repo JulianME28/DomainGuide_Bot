@@ -170,13 +170,16 @@ class AIService:
             return AIOutcome(None, "empty", intent=intent)
         return AIOutcome(query, "ok", intent=intent)
 
-    async def answer_question(self, user_id: int, text: str) -> str | None:
-        """Розмовна відповідь на пояснювальне питання — через ту саму квоту ШІ
-        (той самий ліміт і лічильник витрат, ТЗ §11).
+    async def answer_question(
+        self, user_id: int, text: str, history: list[dict] | tuple[dict, ...] = ()
+    ) -> str | None:
+        """Розмовна відповідь консультанта — через ту саму квоту ШІ (той самий ліміт
+        і лічильник витрат, ТЗ §11).
 
-        None — коли розмовна смуга недоступна, ліміт вичерпано або стався збій;
-        тоді викликач показує ввічливе повідомлення. Донорів і даних ця смуга не
-        бачить (див. app/llm/chat.py)."""
+        history — попередні репліки діалогу [{role, content}] для контексту (керує
+        ним бот-шар у FSM). None — коли смуга недоступна, ліміт вичерпано або стався
+        збій; тоді викликач показує ввічливе повідомлення. Донорів і даних ця смуга
+        не бачить (див. app/llm/chat.py)."""
         if self._responder is None:
             return None
         now = self._clock()
@@ -185,7 +188,7 @@ class AIService:
             return None
         self._counter.bump(now)
         try:
-            answer = await self._responder.answer(text)
+            answer = await self._responder.answer(list(history), text)
         except Exception as exc:  # мережа/формат/таймаут — не валимо бота
             logger.error("Розмовна відповідь ШІ не вдалася (користувач %s): %s", user_id, exc)
             return None
@@ -194,19 +197,23 @@ class AIService:
 
 
 def _build_provider(
-    settings: Settings, http_post: HttpPost | None, *, model: str | None = None
+    settings: Settings,
+    http_post: HttpPost | None,
+    *,
+    model: str | None = None,
+    max_tokens: int | None = None,
 ) -> LLMProvider:
     """Обирає провайдера ШІ за LLM_PROVIDER (перемикання лише через .env).
 
-    `model` дозволяє задати іншу модель, ніж дефолтна фільтрова (для розмовної
-    смуги — LLM_CHAT_MODEL). Контракт однаковий, тож решта коду не залежить від
-    того, який саме API за цим викликом."""
+    `model` і `max_tokens` дозволяють задати інші значення, ніж фільтрові дефолти
+    (для розмовної смуги — LLM_CHAT_MODEL і довший LLM_CHAT_MAX_TOKENS). Контракт
+    однаковий, тож решта коду не залежить від того, який саме API за викликом."""
     common = {
         "api_key": settings.llm_api_key,
         "model": model or settings.llm_model,
         "timeout_seconds": settings.llm_timeout_seconds,
         "http_post": http_post,
-        "max_tokens": settings.llm_max_tokens,
+        "max_tokens": max_tokens or settings.llm_max_tokens,
     }
     if settings.llm_provider == "openai":
         return OpenAIProvider(**common)
@@ -227,7 +234,9 @@ def build_ai_service(settings: Settings, *, http_post: HttpPost | None = None) -
         return None
 
     provider = _build_provider(settings, http_post)
-    chat_provider = _build_provider(settings, http_post, model=settings.llm_chat_model)
+    chat_provider = _build_provider(
+        settings, http_post, model=settings.llm_chat_model, max_tokens=settings.llm_chat_max_tokens
+    )
     return AIService(
         LLMInterpreter(provider),
         limit=settings.llm_calls_limit,
