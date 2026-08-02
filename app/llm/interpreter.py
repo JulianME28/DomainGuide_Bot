@@ -14,8 +14,8 @@ import json
 import re
 from dataclasses import dataclass
 
-from app.analytics.query import DonorQuery
-from app.dictionary.countries import COUNTRIES, country_by_code
+from app.analytics.query import CoverageQuery, DonorQuery
+from app.dictionary.countries import COUNTRIES, Country, country_by_code
 from app.dictionary.languages import LANGUAGES, language_by_code
 from app.llm.provider import LLMError, LLMProvider
 from app.logging_setup import get_logger
@@ -33,6 +33,20 @@ ALLOWED_SECTIONS = frozenset({"magic", "mordy"})
 # Наміри маршрутизатора. Усе поза цим — зводиться до "filter" (безпечний дефолт:
 # збій класифікації НІКОЛИ не веде в розмовну смугу).
 ALLOWED_INTENTS = frozenset({"filter", "question"})
+
+# ОПЕРАЦІЇ (крок 2): гнучкі числові дії, які ШІ РОЗКЛАДАЄ, а рахує код. Whitelist
+# той самий за духом, що й для полів: op поза списком → операцію відкидаємо
+# (тихий фолбек у звичайний фільтр/словник). Поки лише "coverage" (покриття за
+# потребою). Кожен параметр звіряється окремо у read_operation.
+ALLOWED_OPS = frozenset({"coverage"})
+
+# Кепи операції coverage — щоб валідний JSON не породив непомірну роботу чи
+# абсурдні числа. Значення поза межами відкидаються (не обрізаються тихо в бік
+# «схоже на правду»): краще менше країн/порогів, ніж хибний масштаб.
+MAX_COVERAGE_COUNTRIES = 15  # скільки країн у потребі максимум
+MAX_NEED_PER_COUNTRY = 100_000  # верхня межа «скільки треба» на країну
+MAX_THRESHOLDS = 5  # скільки порогів трафіку перевіряти (разом із 0)
+MAX_TRAFFIC_THRESHOLD = 10_000_000  # верхня межа значення порога трафіку
 
 # Числові поля-фільтри, які приймаємо від ШІ. Усе поза цим списком — ігнорується.
 # Стовпця «вихідні» (F) тут немає: якість фільтрується ЛИШЕ по заспамленості
@@ -120,7 +134,23 @@ SYSTEM_PROMPT = (
     "країни, мови, зони, порогів). А «скільки донорів по X» — це НЕ question, це "
     "звичайний filter.\n"
     "Порожній фільтр (без країни, мови, зони, порога) повертай лише коли справді "
-    'нема за чим фільтрувати; якщо це пояснювальне питання — додай {"intent": "question"}.\n'
+    'нема за чим фільтрувати; якщо це пояснювальне питання — додай {"intent": "question"}.\n\n'
+    "ОПЕРАЦІЯ ПОКРИТТЯ (coverage). Якщо користувач задає ПОТРЕБУ по країнах "
+    "(скільки донорів треба на кожну) і питає, чи вистачає / чого бракує / чи "
+    "закриваємо потребу — це НЕ звичайний фільтр і НЕ окремі підрахунки. Поверни "
+    "ОДНУ операцію замість фільтра:\n"
+    '  {"op": "coverage", "section": "magic"|"mordy",\n'
+    '   "needs": {"<код країни>": <ціле>, ...},\n'
+    '   "traffic_thresholds": [<цілі пороги трафіку, згадані в запиті>]}\n'
+    "ВАЖЛИВО про needs vs трафік (не сплутай):\n"
+    "• Числа біля країн («20 AU», «треба 12 CA», «Британії 16») — це ПОТРЕБА, "
+    'вона йде ТІЛЬКИ в "needs". НІКОЛИ не клади її в traffic_min/traffic_max.\n'
+    '• Пороги трафіку («20+ трафік», «з трафіком від 50») — у "traffic_thresholds".\n'
+    "• «скільки всього» → просто не заважає; поріг 0 бот додасть сам.\n"
+    "Приклад:\n"
+    "«морди, треба 20 AU 12 CA 16 UK, скільки всього / 20+ трафік / 50+, чого "
+    'бракує» → {"op":"coverage","section":"mordy","needs":{"au":20,"ca":12,'
+    '"gb":16},"traffic_thresholds":[20,50]}\n'
 )
 
 
@@ -143,6 +173,86 @@ def _coerce_number(value: object) -> float | None:
         except ValueError:
             return None
         return number if number >= 0 else None
+    return None
+
+
+def _coerce_int(value: object) -> int | None:
+    """Ціле ≥0 або None. Булеві відкидаємо; float округлюємо; рядок-число приймаємо.
+
+    Для потреб/порогів дробові значення сенсу не мають — беремо цілу частину.
+    Від'ємні тут не відсіюємо (це роблять окремі перевірки меж), лише не-числа."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        stripped = value.strip()
+        if re.fullmatch(r"-?\d+", stripped):
+            return int(stripped)
+    return None
+
+
+def _read_coverage_needs(raw: object) -> list[tuple[Country, int]]:
+    """Валідовані пари (країна, скільки треба) з поля "needs" — і ТІЛЬКИ звідти.
+
+    Читаємо потребу виключно з "needs": числа біля країн не мають іншого місця,
+    тож сплутати їх із трафіком неможливо. Невідомі коди, не-додатні й позамежні
+    числа, повтори — відкидаємо; порядок збережено; довжина обмежена кепом."""
+    if not isinstance(raw, dict):
+        return []
+    needs: list[tuple[Country, int]] = []
+    seen: set[str] = set()
+    for code, value in raw.items():
+        if not isinstance(code, str):
+            continue
+        country = country_by_code(code.strip().lower())
+        if country is None or country.code in seen:
+            continue
+        amount = _coerce_int(value)
+        if amount is None or amount <= 0 or amount > MAX_NEED_PER_COUNTRY:
+            continue
+        seen.add(country.code)
+        needs.append((country, amount))
+        if len(needs) >= MAX_COVERAGE_COUNTRIES:
+            break
+    return needs
+
+
+def _read_coverage_thresholds(raw: object) -> tuple[int, ...]:
+    """Пороги трафіку: завжди з 0 («всього» + база дефіциту), зростанням, з кепом.
+
+    Кеп кількості зберігає НАЙВИЩІ пороги (саме вони вирішують вердикт), а не
+    найнижчі. Значення поза [0, MAX_TRAFFIC_THRESHOLD] відкидаємо."""
+    nonzero: set[int] = set()
+    if isinstance(raw, list | tuple):
+        for item in raw:
+            number = _coerce_int(item)
+            if number is not None and 0 < number <= MAX_TRAFFIC_THRESHOLD:
+                nonzero.add(number)
+    kept = sorted(nonzero, reverse=True)[: max(0, MAX_THRESHOLDS - 1)]
+    return tuple(sorted({0, *kept}))
+
+
+def read_operation(payload: dict) -> CoverageQuery | None:
+    """Дістає ВАЛІДОВАНУ операцію з JSON — або None (тоді звичайний фільтр/фолбек).
+
+    Whitelist той самий за духом, що й для полів: невідомий op → None; кожен
+    параметр звіряється окремо (база з ALLOWED_SECTIONS, країни через
+    country_by_code, числа з кепами). Порожня потреба після валідації → None."""
+    op = payload.get("op")
+    if op not in ALLOWED_OPS:
+        return None
+    if op == "coverage":
+        raw_section = payload.get("section")
+        if raw_section not in ALLOWED_SECTIONS:
+            return None  # база обов'язкова й має бути відома — не вгадуємо
+        needs = _read_coverage_needs(payload.get("needs"))
+        if not needs:
+            return None
+        thresholds = _read_coverage_thresholds(payload.get("traffic_thresholds"))
+        return CoverageQuery(section_key=raw_section, needs=tuple(needs), thresholds=thresholds)
     return None
 
 
@@ -333,13 +443,16 @@ def read_intent(payload: dict) -> str:
 
 @dataclass(frozen=True, slots=True)
 class Interpretation:
-    """Результат розбору: фільтр (або None) + намір маршрутизатора.
+    """Результат розбору: операція АБО фільтр (або нічого) + намір маршрутизатора.
 
-    query=None означає «фільтра нема»; intent каже, КУДИ тоді йти — у розмовну
-    смугу ("question") чи в словниковий фолбек ("filter")."""
+    operation != None — модель попросила гнучку операцію (напр. coverage); тоді
+    фільтр не застосовуємо, рахує операційний рушій. query=None означає «фільтра
+    нема»; intent каже, КУДИ тоді йти — у розмовну смугу ("question") чи в
+    словниковий фолбек ("filter")."""
 
     query: DonorQuery | None
     intent: str = "filter"
+    operation: CoverageQuery | None = None
 
 
 class LLMInterpreter:
@@ -364,6 +477,13 @@ class LLMInterpreter:
                 raw[:RAW_LOG_LIMIT],
             )
             raise LLMError("не вдалося витягти JSON з відповіді ШІ", stage="unparsable")
+        # Гнучка операція (coverage тощо) має пріоритет над фільтром: якщо модель
+        # її повернула, фільтр НЕ застосовуємо — операція несе власні валідовані
+        # параметри, а рахує їх окремий рушій. Це й додатковий захист needs↔traffic:
+        # навіть якби у фільтр просочився traffic_min, ми його тут відкидаємо.
+        operation = read_operation(payload)
+        if operation is not None:
+            return Interpretation(query=None, intent=read_intent(payload), operation=operation)
         # ТА САМА санітарна сітка, що й у словника: гасимо інвертований діапазон і
         # знімаємо заперечені зони (щоб ШІ-шлях не давав тихих хибних чисел).
         query = sanitize_query(interpret_json(payload), text)

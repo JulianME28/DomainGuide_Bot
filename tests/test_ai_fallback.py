@@ -11,7 +11,7 @@ gpt-4o-mini на питальні формулювання віддає рівн
 
 from __future__ import annotations
 
-from app.analytics.query import DonorQuery
+from app.analytics.query import CoverageQuery, DonorQuery
 from app.bot.context import ActionLog, BotServices
 from app.bot.execution import (
     AI_EMPTY_TEXT,
@@ -229,3 +229,67 @@ class TestДвіБазиЧерезШІ:
         assert "Меджик" in combined and "Морди" in combined
         assert "Розклад по країнах" in combined
         assert "Британія" in combined and "Німеччина" in combined
+
+
+def _coverage_op(section: str, needs: dict[str, int], thresholds=(0,)) -> CoverageQuery:
+    return CoverageQuery(
+        section_key=section,
+        needs=tuple((country_by_code(c), n) for c, n in needs.items()),
+        thresholds=thresholds,
+    )
+
+
+class TestОпераціяCoverage:
+    """Крок 2, Фаза A: операція coverage маршрутизується й рахується рушієм."""
+
+    async def test_операція_дає_картку_покриття(self, columns_config):
+        # ШІ РОЗКЛАВ запит на операцію; рушій рахує по реальних (фейкових) даних.
+        # magic: de=7, gb=3 → de(потреба 2) ✅, gb(потреба 5) ❌.
+        op = _coverage_op("magic", {"de": 2, "gb": 5})
+        ai = FakeAI(AIOutcome(None, "operation", operation=op))
+        services = make_services(columns_config, ai=ai)
+        message = FakeMessage()
+        state = FakeState()
+
+        await run_ai_query(
+            message, services, state, 1, "меджик треба 2 німеччини 5 британії, чого бракує"
+        )
+
+        combined = " ".join(_all_texts(message))
+        assert "Зрозумів як" in combined and "покриття по країнах" in combined
+        assert "покриття за потребою" in combined
+        assert "✅" in combined  # Німеччина закрита
+        assert "❌" in combined  # Британії бракує
+
+    async def test_операція_скидає_стан(self, columns_config):
+        op = _coverage_op("magic", {"de": 2})
+        ai = FakeAI(AIOutcome(None, "operation", operation=op))
+        services = make_services(columns_config, ai=ai)
+        message = FakeMessage()
+        state = FakeState({"chat_history": [{"role": "user", "content": "привіт"}]})
+
+        await run_ai_query(message, services, state, 1, "меджик треба 2 німеччини, чи закриваємо")
+
+        assert state.current_state is None
+        assert (await state.get_data()).get("chat_history") == []
+
+
+class TestДівертПокриттяЗВільногоТексту:
+    """Покривний запит із вільного тексту НЕ рахується хибно словником, а йде ШІ."""
+
+    async def test_вільний_текст_diverts_у_операцію(self, columns_config):
+        from app.bot.handlers.freeform import handle_free_text
+
+        op = _coverage_op("magic", {"de": 2, "gb": 5})
+        ai = FakeAI(AIOutcome(None, "operation", operation=op))
+        services = make_services(columns_config, ai=ai)
+        message = FakeMessage("меджик треба 2 німеччини 5 британії, скільки всього, чого бракує")
+        state = FakeState()
+
+        await handle_free_text(message, services, state)
+
+        combined = " ".join(_all_texts(message))
+        # Показано картку покриття, а НЕ хибний мультикраїнний «Розклад по країнах».
+        assert "покриття за потребою" in combined
+        assert "Розклад по країнах" not in combined
+        assert ai.calls  # ШІ таки залучили

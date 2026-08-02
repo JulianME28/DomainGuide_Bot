@@ -133,6 +133,18 @@ _COUNTRY_BREAKDOWN = re.compile(
 # Це лише опис для рядка «Запит:», НЕ фільтр — самі країни задані переліком.
 _LANG_COUNTRY_DESC = re.compile(r"([а-яіїєґ]+мов)н\w*\s+країн|вс[іео]\w*\s+([а-яіїєґ]+мов)н")
 
+# Слова-СИГНАЛ «покриття за потребою» (операція coverage, крок 2): користувач
+# задав потребу по країнах і питає, чи вистачає / чого бракує / чи закриваємо.
+# Це НЕ фільтр і НЕ підрахунок словником: словник тут дав би тихо хибне число
+# (взяв би один поріг за глобальний traffic-фільтр). Тому запит із цим сигналом
+# + переліком країн віддаємо ШІ — він РОЗКЛАДАЄ на операцію, а рахує рушій.
+# Навмисно вузько: лише однозначні «покривні» слова, щоб не перехоплювати
+# звичайні мультикраїнні запити.
+_COVERAGE_SIGNAL = re.compile(
+    r"(?:бракує|не\s+вистача\w*|вистача\w*|покритт\w*|дефіцит\w*"
+    r"|закрива\w*\s+потреб\w*|чи\s+закрива\w*)"
+)
+
 
 def _language_country_label(text: str) -> str:
     """«англомовні країни» / «всі англомовні» → «англомовних» (для опису списку).
@@ -431,6 +443,12 @@ class ParsedQuery:
     одного числа показуємо топ-N країн + «Разом» + «…та ще N», з кнопкою «показати
     всі». Це прохання про ПОКАЗ, не фільтр — детектується словом-сигналом у тексті."""
 
+    wants_coverage: bool = False
+    """Чи є в тексті сигнал «покриття за потребою» («бракує», «вистачає»,
+    «покриття», «чи закриваємо потребу»). Сам по собі це лише сигнал; рішення
+    віддати запит ШІ (операція coverage) ухвалює хендлер — і ЛИШЕ для переліку
+    країн (≥2) та коли ШІ ввімкнено. Словник такий запит порахував би хибно."""
+
     @property
     def needs_clarification(self) -> bool:
         return not self.understood
@@ -463,6 +481,10 @@ def parse_free_text(text: str, *, default_section: str = "magic") -> ParsedQuery
     want_total = plus_bases or _SUMMARY.search(normalized) is not None
     # Сигнал «розбивка по країнах» — на свіжому тексті, до затирання вимірів.
     wants_country_breakdown = _COUNTRY_BREAKDOWN.search(normalized) is not None
+    # Сигнал «покриття за потребою» — теж на свіжому тексті (слова «бракує»/
+    # «вистачає» зникли б після затирання вимірів). Це лише сигнал; діверт у ШІ
+    # робить хендлер, і лише для переліку країн.
+    wants_coverage = _COVERAGE_SIGNAL.search(normalized) is not None
     # Опис списку через мовну ознаку («англомовні країни») — на свіжому тексті,
     # доки слово-ознаку не затерли пізніші кроки розбору.
     countries_note = _language_country_label(normalized)
@@ -576,6 +598,7 @@ def parse_free_text(text: str, *, default_section: str = "magic") -> ParsedQuery
             both_bases=both_bases,
             want_total=want_total,
             wants_country_breakdown=wants_country_breakdown,
+            wants_coverage=wants_coverage,
         )
 
     query = DonorQuery(
@@ -641,6 +664,7 @@ def parse_free_text(text: str, *, default_section: str = "magic") -> ParsedQuery
         both_bases=both_bases,
         want_total=want_total,
         wants_country_breakdown=wants_country_breakdown,
+        wants_coverage=wants_coverage,
     )
 
 

@@ -21,6 +21,7 @@ from app.bot.execution import (
     chat_reply,
     reset_chat_history,
     resolve_with_ai,
+    run_ai_query,
     show_both_bases,
     show_country_breakdown,
     show_result,
@@ -58,6 +59,14 @@ async def handle_free_text(message: Message, services: BotServices, state: FSMCo
     # Запам'ятовуємо текст запиту — щоб кнопка «Уточнити через ШІ» могла
     # повторити РІВНО ТОЙ САМИЙ запит через ШІ.
     await state.update_data(last_text=text)
+
+    # Запит-ПОКРИТТЯ («потреба по країнах + бракує/вистачає/покриття») словник
+    # порахував би хибно (взяв би один поріг за глобальний traffic-фільтр). Тож
+    # для переліку країн віддаємо його ШІ: він РОЗКЛАДАЄ на операцію coverage, а
+    # рахує рушій (run_ai_query сам обробляє операцію й має власний фолбек).
+    if parsed.wants_coverage and parsed.query.is_multi_country and services.ai is not None:
+        await run_ai_query(message, services, state, message.from_user.id, text)
+        return
 
     if parsed.needs_clarification:
         # Словник не зрозумів — пробуємо ШІ (якщо ввімкнено). Не вийшло — підказка.

@@ -22,6 +22,7 @@ from app.bot.execution import (
     execute,
     reset_chat_history,
     resolve_with_ai,
+    run_ai_query,
     safe_edit,
     show_both_bases,
     show_country_breakdown,
@@ -306,6 +307,12 @@ async def receive_free_text(message: Message, services: BotServices, state: FSMC
     parsed = parse_free_text(text, default_section=data.get("section_key", "magic"))
     # Запам'ятовуємо текст — для кнопки «Уточнити через ШІ» (той самий запит).
     await state.update_data(last_text=text)
+
+    # Запит-ПОКРИТТЯ по переліку країн → ШІ (операція coverage), а не хибний
+    # словниковий підрахунок. Той самий діверт, що й у вільному тексті.
+    if parsed.wants_coverage and parsed.query.is_multi_country and services.ai is not None:
+        await run_ai_query(message, services, state, message.from_user.id, text)
+        return
 
     if parsed.needs_clarification:
         # Словник не зрозумів — резервно пробуємо ШІ (якщо ввімкнено).

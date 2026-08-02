@@ -17,7 +17,7 @@ from collections import defaultdict, deque
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from app.analytics.query import DonorQuery
+from app.analytics.query import CoverageQuery, DonorQuery
 from app.llm.chat import ConversationResponder
 from app.llm.interpreter import LLMInterpreter
 from app.llm.provider import AnthropicProvider, HttpPost, LLMError, LLMProvider, OpenAIProvider
@@ -33,6 +33,7 @@ class AIOutcome:
 
     reason:
       * "ok"          — розпізнано, query заповнено;
+      * "operation"   — модель попросила гнучку операцію (coverage); див. operation;
       * "limit"       — вичерпано ліміт викликів ШІ;
       * "unavailable" — ШІ недоступний: мережа, порожня відповідь, дивний формат;
       * "unparsable"  — ШІ відповів, але не валідним JSON / відповідь обрізана;
@@ -42,11 +43,15 @@ class AIOutcome:
     замовчуванням, "question" — пояснювальне питання). Керує маршрутизацією ЛИШЕ
     коли query is None: питання → розмовна смуга, інакше → словниковий фолбек.
     Валідний фільтр (query != None) завжди донор-запит, хай там який intent.
+
+    operation — валідована гнучка операція (напр. CoverageQuery). Коли вона є,
+    вона має пріоритет: рахує окремий рушій, фільтр не застосовуємо.
     """
 
     query: DonorQuery | None
     reason: str
     intent: str = "filter"
+    operation: CoverageQuery | None = None
 
 
 # Стадія помилки виклику (LLMError.stage) → причина для користувача/логіки.
@@ -158,14 +163,19 @@ class AIService:
             return AIOutcome(None, "unavailable")
 
         query, intent = interpretation.query, interpretation.intent
-        # Рішення маршрутизатора в лог: намір моделі + чи витягнувся фільтр. Куди
-        # запит пішов урешті (донор / чат / словник) логує вже викликач.
+        operation = interpretation.operation
+        # Рішення маршрутизатора в лог: намір моделі + чи витягнувся фільтр/операція.
+        # Куди запит пішов урешті (донор / операція / чат / словник) логує викликач.
         logger.info(
-            "Виклик ШІ (користувач %s): intent=%s, фільтр=%s",
+            "Виклик ШІ (користувач %s): intent=%s, фільтр=%s, операція=%s",
             user_id,
             intent,
             "є" if query is not None else "нема",
+            operation.__class__.__name__ if operation is not None else "нема",
         )
+        # Операція має пріоритет над фільтром (несе власні валідовані параметри).
+        if operation is not None:
+            return AIOutcome(None, "operation", intent=intent, operation=operation)
         if query is None:
             return AIOutcome(None, "empty", intent=intent)
         return AIOutcome(query, "ok", intent=intent)

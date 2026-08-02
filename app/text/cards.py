@@ -17,6 +17,7 @@ from __future__ import annotations
 import html
 import time
 
+from app.analytics.coverage import CoverageResult, CoverageVerdict
 from app.analytics.engine import (
     Aggregate,
     CountryDistribution,
@@ -757,6 +758,89 @@ def render_country_list_full(
             current.append(tail_text)
     chunks.append("\n".join(current))
     return chunks
+
+
+def _threshold_label(threshold: int) -> str:
+    """Підпис порогу трафіку для картки: 0 → «всього», інакше «N+»."""
+    return "всього" if threshold == 0 else f"{number(threshold)}+"
+
+
+_COVERAGE_MARK = {
+    CoverageVerdict.ENOUGH: "✅",
+    CoverageVerdict.LOW_QUALITY: "⚠️",
+    CoverageVerdict.SHORT: "❌",
+}
+
+
+def _coverage_verdict_text(result: CoverageResult, row) -> str:
+    """Короткий вердикт по країні — словами, від того ж порогу, що й дефіцит."""
+    mark = _COVERAGE_MARK[row.verdict]
+    if row.verdict is CoverageVerdict.ENOUGH:
+        if result.max_threshold > 0:
+            return f"{mark} вистачає (навіть {number(result.max_threshold)}+)"
+        return f"{mark} вистачає"
+    if row.verdict is CoverageVerdict.LOW_QUALITY:
+        return (
+            f"{mark} на {number(result.max_threshold)}+ лише {number(row.top_count)} "
+            f"— бракує {number(row.deficit)}"
+        )
+    return f"{mark} бракує {number(row.deficit)} (всього {number(row.total)})"
+
+
+def _coverage_summary(result: CoverageResult) -> str:
+    """Підсумковий рядок — рахується з ТИХ САМИХ rows, що й показ вище.
+
+    Не окремий переказ: covered/short — це фільтр по result.rows, а дефіцити —
+    row.deficit кожного рядка. Тож підсумок не може розійтися з деталізацією."""
+    total = len(result.rows)
+    covered = len(result.covered)
+    tail = f" (навіть {number(result.max_threshold)}+)" if result.max_threshold > 0 else ""
+    if covered == total:
+        return f"✅ Потребу закрито по всіх {total} {plural_countries(total)}{tail}."
+
+    short_bits = ", ".join(f"{number(row.deficit)} {row.country.flag}" for row in result.short)
+    return f"Закрито {covered}/{total} {plural_countries(total)}{tail}; бракує: {short_bits}."
+
+
+def render_coverage(result: CoverageResult) -> str:
+    """Картка «покриття за потребою»: спершу як бот ЗРОЗУМІВ запит, потім числа.
+
+    Рядок «Зрозумів як» іде ПЕРЕД числами навмисно: головний ризик тут —
+    неправильно розкладена потреба (не та база / поріг / країна). Хай користувач
+    побачить намір одразу, до того як довіриться числам. Усі числа — рушій."""
+    if not result.available:
+        lines = [
+            f"🗂 <b>{escape(result.section_title)}</b> — тимчасово недоступна.",
+            f"<i>{escape((result.error or '')[:150])}</i>",
+        ]
+        return "\n".join(lines)
+
+    # 1) Як бот зрозумів запит (з валідованої операції, не з сирого ШІ).
+    needs_line = " · ".join(f"{row.country.flag} {number(row.need)}" for row in result.rows)
+    thresholds_line = " · ".join(_threshold_label(t) for t in result.thresholds)
+    lines = [
+        f"🧠 <b>Зрозумів як:</b> покриття по країнах · база {escape(result.section_title)}",
+        f"   треба: {needs_line}",
+        f"   пороги трафіку: {thresholds_line}",
+    ]
+    if result.stale:
+        lines.append("")
+        lines.append(_stale_note(None))
+
+    # 2) Рядок на кожну країну: потреба, кількості за порогами, вердикт.
+    lines.append("")
+    lines.append(f"🗂 <b>{escape(result.section_title)} — покриття за потребою</b>")
+    for row in result.rows:
+        counts = " · ".join(f"{_threshold_label(t)} {number(c)}" for t, c in row.counts)
+        lines.append(
+            f"{row.country.flag} <b>{escape(row.country.name_uk)}</b> · "
+            f"треба {number(row.need)} — {counts}   {_coverage_verdict_text(result, row)}"
+        )
+
+    # 3) Підсумок — з тих самих rows.
+    lines.append("")
+    lines.append(_coverage_summary(result))
+    return "\n".join(lines)
 
 
 def render_both_bases(query, blocks: list[str], *, explicit_both: bool = False) -> str:

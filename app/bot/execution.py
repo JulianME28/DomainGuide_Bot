@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 
+from app.analytics.coverage import run_coverage
 from app.analytics.engine import (
     MAX_MULTI_COUNTRIES,
     QueryResult,
@@ -25,7 +26,7 @@ from app.analytics.engine import (
     run_query,
     unsupported_dimensions,
 )
-from app.analytics.query import Dimension, DonorQuery
+from app.analytics.query import CoverageQuery, Dimension, DonorQuery
 from app.analytics.recommendations import (
     Recommendations,
     build_recommendations,
@@ -43,6 +44,7 @@ from app.text.cards import (
     render_compact_multi_block,
     render_country_breakdown,
     render_country_breakdown_block,
+    render_coverage,
     render_multi_country,
     render_multi_summary,
     render_result,
@@ -404,6 +406,41 @@ async def show_country_breakdown(
     )
 
 
+async def show_coverage(
+    target: Message | CallbackQuery,
+    services: BotServices,
+    operation: CoverageQuery,
+    user_id: int,
+) -> None:
+    """Показує покриття за потребою (операція coverage, крок 2).
+
+    ШІ лише розклав запит на цю операцію; рахує детермінований рушій
+    (run_coverage), а картка спершу показує, ЯК бот зрозумів запит, і лише потім
+    числа. Назовні йдуть тільки кількості по країнах — доменів рушій не віддає."""
+    message = target.message if isinstance(target, CallbackQuery) else target
+    if message is None:
+        raise RuntimeError("Немає повідомлення, у яке можна відповісти")
+
+    status = await message.answer(STATUS_TEXT)
+    try:
+        dataset = await services.repository.get(operation.section_key)
+        result = await asyncio.to_thread(run_coverage, dataset, operation)
+    except Exception:
+        logger.exception("Не вдалося порахувати покриття за потребою")
+        await status.edit_text(
+            "⚠️ Не вдалося виконати запит. Спробуйте ще раз або почніть спочатку: /start",
+            reply_markup=back_to_menu(),
+        )
+        return
+
+    # У журнал — лише зведення (скільки країн, скільки закрито), без доменів.
+    services.action_log.add(
+        user_id,
+        f"покриття {result.section_title}: {len(result.covered)}/{len(result.rows)} закрито",
+    )
+    await status.edit_text(render_coverage(result), reply_markup=back_to_menu())
+
+
 async def resolve_with_ai(services: BotServices, user_id: int, text: str) -> AIOutcome | None:
     """Резервний розбір через ШІ — лише коли ШІ ввімкнено (є ключ).
 
@@ -579,6 +616,21 @@ async def run_ai_query(
 
     status = await message.answer(AI_STATUS_TEXT)
     outcome = await services.ai.interpret_with_reason(user_id, text.strip())
+
+    # Гнучка операція (coverage тощо) — має пріоритет. ШІ лише РОЗКЛАВ запит;
+    # рахує рушій. Донор-запит скидає контекст консультанта — операція теж.
+    if outcome.operation is not None:
+        await _delete_or_ignore(status)
+        await state.set_state(None)
+        await reset_chat_history(state)
+        logger.info(
+            "Маршрут ШІ (користувач %s): операція %s",
+            user_id,
+            outcome.operation.__class__.__name__,
+        )
+        await show_coverage(message, services, outcome.operation, user_id)
+        return
+
     if outcome.query is None:
         await _delete_or_ignore(status)
 
