@@ -17,8 +17,9 @@ from app.analytics.query import DonorQuery
 from app.bot.context import BotServices
 from app.bot.execution import execute, safe_edit
 from app.bot.handlers.common import build_status_text
-from app.bot.keyboards import admin_menu, back_to_menu
+from app.bot.keyboards import access_users_menu, admin_menu, back_to_menu
 from app.dictionary.countries import country_by_code
+from app.text.cards import escape
 
 router = Router(name="admin")
 
@@ -59,7 +60,18 @@ async def admin_actions(callback: CallbackQuery, services: BotServices) -> None:
         await safe_edit(callback, _columns_text(services), admin_menu())
 
     elif action == "users":
-        await safe_edit(callback, _users_text(services), admin_menu())
+        await safe_edit(callback, _users_text(services), _users_markup(services))
+
+    elif action == "revoke":
+        parts = callback.data.split(":")
+        store = services.access_store
+        if store is None or len(parts) < 3 or not parts[2].lstrip("-").isdigit():
+            await callback.answer("Некоректний запит на відкликання", show_alert=True)
+            return
+        removed = await store.revoke(int(parts[2]))
+        await callback.answer("Доступ прибрано" if removed else "Уже немає в списку")
+        await safe_edit(callback, _users_text(services), _users_markup(services))
+        return
 
     elif action == "log":
         await safe_edit(callback, _log_text(services), admin_menu())
@@ -139,19 +151,59 @@ def _ai_status_text(services: BotServices) -> str:
     )
 
 
+def _code_users(services: BotServices) -> list:
+    """Ті, хто зайшов за КОДОМ (зі сховища). Порожньо, якщо сховища немає."""
+    store = services.access_store
+    return store.list() if store is not None else []
+
+
 def _users_text(services: BotServices) -> str:
-    """Список дозволених користувачів."""
+    """Список доступу: статичний (.env) + динамічний (за кодом)."""
     settings = services.settings
     allowed = ", ".join(str(i) for i in sorted(settings.allowed_user_ids)) or "порожньо"
     admins = ", ".join(str(i) for i in sorted(settings.admin_user_ids)) or "порожньо"
 
-    return (
-        "👥 <b>Доступ</b>\n\n"
-        f"<b>Дозволені:</b> {allowed}\n"
-        f"<b>Адміни:</b> {admins}\n\n"
-        "<i>Список зберігається у файлі .env (ALLOWED_USER_IDS і ADMIN_USER_IDS), "
-        "а не в коді. Щоб змінити — відредагуйте .env і перезапустіть бота.</i>"
+    lines = [
+        "👥 <b>Доступ</b>",
+        "",
+        f"<b>Дозволені (.env):</b> {allowed}",
+        f"<b>Адміни (.env):</b> {admins}",
+        "",
+    ]
+
+    if settings.access_code_enabled:
+        code_users = _code_users(services)
+        lines.append("<b>За кодом:</b>")
+        if code_users:
+            for user in code_users:
+                # source="code" — звичайний вхід; інше (майбутні коди клієнтів)
+                # показуємо в дужках. Екрануємо на випадок довільної назви джерела.
+                suffix = "" if user.source == "code" else f" ({escape(user.source)})"
+                lines.append(f"  <code>{user.user_id}</code> — з {user.granted_text}{suffix}")
+            lines.append("")
+            lines.append(
+                "<i>Прибрати доступ за кодом — кнопкою нижче або /revoke &lt;id&gt;. "
+                "Статичний список .env через бота не змінюється.</i>"
+            )
+        else:
+            lines.append("  <i>поки нікого</i>")
+    else:
+        lines.append("<i>Вхід за кодом вимкнено (ACCESS_CODE порожній у .env).</i>")
+
+    lines.append("")
+    lines.append(
+        "<i>Статичні списки — у .env (ALLOWED_USER_IDS, ADMIN_USER_IDS). Щоб змінити — "
+        "відредагуйте .env і перезапустіть бота.</i>"
     )
+    return "\n".join(lines)
+
+
+def _users_markup(services: BotServices):
+    """Клавіатура екрана «Доступ»: кнопки «Прибрати» на код-користувачів."""
+    code_users = _code_users(services) if services.settings.access_code_enabled else []
+    if code_users:
+        return access_users_menu(user.user_id for user in code_users)
+    return admin_menu()
 
 
 def _log_text(services: BotServices) -> str:
@@ -196,6 +248,40 @@ async def _test_query_text(services: BotServices) -> str:
         "<i>Якщо числа виглядають розумно — ланцюжок «Google → розбір → "
         "підрахунки → картка» працює.</i>"
     )
+
+
+@router.message(Command("revoke"))
+async def cmd_revoke(message: Message, services: BotServices) -> None:
+    """Відкликати доступ за кодом конкретному ID: /revoke 123456789.
+
+    Прибирає лише динамічний доступ (за кодом). Статичний список .env через бота
+    не змінюється — його правлять у .env. Доступно лише адміну."""
+    if not _is_admin(services, message.from_user.id):
+        await message.answer(DENIED)
+        return
+
+    store = services.access_store
+    if store is None:
+        await message.answer("Сховище доступу не підключено.")
+        return
+
+    parts = (message.text or "").split()
+    if len(parts) < 2 or not parts[1].lstrip("-").isdigit():
+        await message.answer(
+            "Вкажіть Telegram ID: <code>/revoke 123456789</code>\n"
+            "Побачити, хто зайшов за кодом — у адмін-меню → «Дозволені користувачі»."
+        )
+        return
+
+    user_id = int(parts[1])
+    removed = await store.revoke(user_id)
+    if removed:
+        await message.answer(f"✅ Доступ за кодом для <code>{user_id}</code> відкликано.")
+    else:
+        await message.answer(
+            f"ℹ️ <code>{user_id}</code> немає в списку за кодом "
+            "(статичні ID з .env через бота не прибираються)."
+        )
 
 
 @router.message(Command("status"))

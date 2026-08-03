@@ -369,3 +369,16 @@ def admin_menu() -> InlineKeyboardMarkup:
     builder.button(text="⬅️ До меню", callback_data="menu:main")
     builder.adjust(2, 1, 1, 1, 1, 1)
     return builder.as_markup()
+
+
+def access_users_menu(user_ids: Iterable[int]) -> InlineKeyboardMarkup:
+    """Список тих, хто зайшов за КОДОМ, із кнопкою «❌ Прибрати» на кожного.
+
+    Прибирає лише динамічний доступ (за кодом); статичний список .env через бота
+    не чіпається. Порожній список → лише кнопка повернення в адмін-меню."""
+    builder = InlineKeyboardBuilder()
+    for user_id in user_ids:
+        builder.button(text=f"❌ Прибрати {user_id}", callback_data=f"admin:revoke:{user_id}")
+    builder.button(text="⬅️ Адмін-меню", callback_data="admin:menu")
+    builder.adjust(1)
+    return builder.as_markup()
