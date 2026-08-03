@@ -12,6 +12,7 @@ import time
 from collections import deque
 from dataclasses import dataclass, field
 
+from app.bot.access import AccessStore
 from app.data.columns import ColumnsConfig
 from app.data.repository import DonorRepository
 from app.llm.service import AIService
@@ -67,6 +68,10 @@ class BotServices:
     action_log: ActionLog = field(default_factory=ActionLog)
     ai: AIService | None = None
     """Сервіс ШІ для розмитих запитів. None — ШІ вимкнено (немає ключа)."""
+
+    access_store: AccessStore | None = None
+    """Динамічний список доступу (хто зайшов за КОДОМ). None — сховище не
+    підключено (тоді діє лише статичний список ID з .env)."""
 
     def section_title(self, section_key: str) -> str:
         """Назва розділу для людини: "magic" → «Меджик»."""

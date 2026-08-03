@@ -25,6 +25,7 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
 
+from app.bot.access import AccessStore
 from app.bot.context import BotServices
 from app.bot.handlers import build_router
 from app.bot.middlewares import setup_middlewares
@@ -55,7 +56,21 @@ def build_services(settings: Settings) -> BotServices:
             "ШІ увімкнено: провайдер %s, модель %s", settings.llm_provider, settings.llm_model
         )
 
-    return BotServices(settings=settings, columns=columns, repository=repository, ai=ai)
+    # Динамічний список доступу (за кодом). Читаємо файл у пам'ять на старті.
+    access_store = AccessStore(settings.access_store_file)
+    access_store.load()
+    if settings.access_code_enabled:
+        logger.info("Вхід за кодом УВІМКНЕНО (файл: %s)", settings.access_store_file)
+    else:
+        logger.info("Вхід за кодом вимкнено (ACCESS_CODE порожній) — лише список .env")
+
+    return BotServices(
+        settings=settings,
+        columns=columns,
+        repository=repository,
+        ai=ai,
+        access_store=access_store,
+    )
 
 
 async def run() -> None:

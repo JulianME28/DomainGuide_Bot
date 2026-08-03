@@ -17,30 +17,61 @@ from __future__ import annotations
 import time
 from collections import defaultdict, deque
 from collections.abc import Awaitable, Callable
+from contextlib import suppress
 from typing import Any
 
 from aiogram import BaseMiddleware
 from aiogram.types import CallbackQuery, Message, TelegramObject, User
 
+from app.bot.access import AttemptLimiter, verify_code
 from app.bot.context import BotServices
+from app.bot.keyboards import main_menu
 from app.logging_setup import get_logger
 
 logger = get_logger(__name__)
 
 Handler = Callable[[TelegramObject, dict[str, Any]], Awaitable[Any]]
 
+# Тексти шлюзу доступу за кодом. Сам КОД тут не фігурує ніколи.
+ACCESS_PROMPT_TEXT = (
+    "🔒 <b>Бот приватний.</b>\n\n"
+    "Щоб отримати доступ, введіть <b>код доступу</b> одним повідомленням."
+)
+ACCESS_GRANTED_TEXT = "✅ <b>Доступ відкрито!</b>\n\nВітаю — тепер бот доступний. Ось меню:"
+ACCESS_WRONG_TEXT = "❌ Невірний код. Перевірте й спробуйте ще раз."
+ACCESS_TOO_MANY_TEXT = (
+    "⏳ <b>Забагато спроб.</b>\n\nСпробуйте пізніше — вхід тимчасово заблоковано."
+)
+
 
 class AccessMiddleware(BaseMiddleware):
-    """Пускає лише тих, чий Telegram ID є у списку ALLOWED_USER_IDS.
+    """Єдиний шлюз доступу.
 
-    Стороннім бот не відповідає взагалі (вимога ТЗ, розділ 6): мовчання
-    краще за відповідь «вам не можна», бо не підтверджує, що бот існує.
-    Спроба доступу пишеться в лог.
+    Пускає тих, чий Telegram ID є у СТАТИЧНОМУ списку .env (ALLOWED_USER_IDS +
+    адміни) АБО у ДИНАМІЧНОМУ сховищі (хто зайшов за кодом).
+
+    Для НЕавторизованих:
+      * якщо код доступу вимкнено (ACCESS_CODE порожній) — мовчимо, як раніше
+        (мовчання краще за «вам не можна»: не підтверджує існування бота);
+      * якщо код увімкнено — просимо ввести код; правильний → грант назавжди,
+        невірний → відмова (з лімітом спроб проти брутфорсу). Сам код у лог і в
+        тексти відмов не потрапляє НІКОЛИ.
     """
 
     def __init__(self, services: BotServices) -> None:
         self._services = services
         self._warned: set[int] = set()
+        settings = services.settings
+        self._attempts = AttemptLimiter(
+            settings.access_code_attempts, settings.access_code_window_seconds
+        )
+
+    def _is_allowed(self, user_id: int) -> bool:
+        """Статичний список (.env) АБО динамічне сховище (за кодом)."""
+        if self._services.settings.is_allowed(user_id):
+            return True
+        store = self._services.access_store
+        return store is not None and store.contains(user_id)
 
     async def __call__(self, handler: Handler, event: TelegramObject, data: dict[str, Any]) -> Any:
         user: User | None = data.get("event_from_user")
@@ -48,14 +79,68 @@ class AccessMiddleware(BaseMiddleware):
         if user is None:
             return None
 
-        if not self._services.settings.is_allowed(user.id):
-            # Логуємо кожного чужого лише раз, щоб не засмічувати журнал.
+        if self._is_allowed(user.id):
+            return await handler(event, data)
+
+        # Не авторизований. Код вимкнено → давня поведінка: мовчимо, логуємо раз.
+        if not self._services.settings.access_code_enabled:
             if user.id not in self._warned:
                 self._warned.add(user.id)
                 logger.warning("Відхилено доступ: Telegram ID %s", user.id)
             return None
 
-        return await handler(event, data)
+        # Код увімкнено → шлюз уведення коду. Далі обробник НЕ викликаємо.
+        await self._handle_code_entry(event, user)
+        return None
+
+    def _classify(self, user_id: int, text: str) -> str:
+        """Чисте рішення шлюзу: "blocked" | "grant" | "prompt" | "wrong".
+
+        Робить облік спроб (fail/reset), але у СХОВИЩЕ не пише — це асинхронний
+        крок, його виконує _process_text. Винесено окремо, щоб логіку можна було
+        протестувати без телеграм-обʼєктів. Сам код нікуди не повертаємо."""
+        if self._attempts.blocked(user_id):
+            return "blocked"
+        if verify_code(text, self._services.settings.access_code):
+            self._attempts.reset(user_id)
+            return "grant"
+        # Порожнє / команда / привітання → підказка; спробу НЕ рахуємо (щоб
+        # людина не «згоріла» на вітанні).
+        if not text or text.startswith("/"):
+            return "prompt"
+        # Схоже на код, але невірне → рахуємо спробу. Сам код у лог НЕ пишемо.
+        self._attempts.register_failure(user_id)
+        return "wrong"
+
+    async def _process_text(self, user_id: int, text: str) -> str:
+        """Рішення шлюзу + запис у сховище на грант. Повертає мітку рішення."""
+        outcome = self._classify(user_id, text.strip())
+        if outcome == "grant" and self._services.access_store is not None:
+            await self._services.access_store.grant(user_id)
+        return outcome
+
+    async def _handle_code_entry(self, event: TelegramObject, user: User) -> None:
+        """Обробляє спробу входу за кодом для неавторизованого користувача."""
+        # Кнопок у чужого немає — на callback лише тихо квитуємо, без відповіді.
+        if isinstance(event, CallbackQuery):
+            with suppress(Exception):
+                await event.answer()
+            return
+        if not isinstance(event, Message):
+            return
+
+        outcome = await self._process_text(user.id, event.text or "")
+
+        if outcome == "blocked":
+            logger.warning("Забагато спроб коду доступу: Telegram ID %s", user.id)
+            await _safe_answer(event, ACCESS_TOO_MANY_TEXT)
+        elif outcome == "grant":
+            await _safe_answer(event, ACCESS_GRANTED_TEXT, main_menu(is_admin=False))
+        elif outcome == "prompt":
+            await _safe_answer(event, ACCESS_PROMPT_TEXT)
+        else:  # "wrong"
+            logger.warning("Невірний код доступу: Telegram ID %s", user.id)
+            await _safe_answer(event, ACCESS_WRONG_TEXT)
 
 
 class RateLimitMiddleware(BaseMiddleware):
@@ -138,6 +223,14 @@ class ActionLogMiddleware(BaseMiddleware):
 # ---------------------------------------------------------------------------
 # Допоміжні відповіді
 # ---------------------------------------------------------------------------
+
+
+async def _safe_answer(event: Message, text: str, markup: Any = None) -> None:
+    """Відповідає на повідомлення шлюзу доступу, не падаючи на дрібницях."""
+    try:
+        await event.answer(text, reply_markup=markup)
+    except Exception:
+        logger.debug("Не вдалося відповісти на шлюзі доступу", exc_info=True)
 
 
 async def _notify_rate_limited(event: TelegramObject, window: int) -> None:
