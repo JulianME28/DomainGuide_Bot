@@ -18,6 +18,9 @@ from dotenv import load_dotenv
 # Корінь проєкту — тека, де лежать .env, config/ і credentials.json.
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
+# Дефолтний шлях до файлу динамічних грантів доступу (за кодом). Не в git.
+_DEFAULT_ACCESS_STORE = PROJECT_ROOT / "data" / "allowed_users.json"
+
 
 class SettingsError(RuntimeError):
     """Помилка в налаштуваннях. Текст цієї помилки бачить людина, тому він
@@ -40,6 +43,20 @@ class Settings:
     rate_limit_requests: int
     rate_limit_window_seconds: int
     log_level: str
+
+    # --- Доступ за КОДОМ (за замовчуванням вимкнено) ------------------------
+    # repr=False — код доступу секрет, як і токен: у лог і в текст помилки не
+    # потрапляє НІКОЛИ. Порожній код = функція вимкнена (лишається лише ручний
+    # список ID). Файл динамічних грантів не в git (він .json, у .gitignore).
+    access_code: str = field(default="", repr=False)
+    access_code_attempts: int = 5
+    access_code_window_seconds: int = 3600
+    access_store_file: Path = field(default_factory=lambda: _DEFAULT_ACCESS_STORE)
+
+    @property
+    def access_code_enabled(self) -> bool:
+        """Чи ввімкнено вхід за кодом: код у .env заданий (непорожній)."""
+        return bool(self.access_code.strip())
 
     # --- ШІ для вільних запитів (за замовчуванням вимкнено) ------------------
     # repr=False — ключ ШІ, як і токен бота, не має потрапити в лог чи в текст
@@ -200,6 +217,14 @@ def load_settings(env_file: str | Path | None = None, *, require_token: bool = T
     # розмови вмикають свідомо, це не дефолт).
     llm_chat_model = os.getenv("LLM_CHAT_MODEL", "").strip() or llm_model
 
+    # Код доступу НЕ .strip() тут: обрізку робить verify_code (щоб не втратити
+    # значущі краї, якщо колись знадобляться). Порожній = функція вимкнена.
+    access_code = os.getenv("ACCESS_CODE", "")
+    access_store_raw = os.getenv("ACCESS_STORE_FILE", "").strip() or "data/allowed_users.json"
+    access_store_file = Path(access_store_raw)
+    if not access_store_file.is_absolute():
+        access_store_file = PROJECT_ROOT / access_store_file
+
     return Settings(
         bot_token=bot_token,
         data_backend=data_backend,
@@ -230,4 +255,12 @@ def load_settings(env_file: str | Path | None = None, *, require_token: bool = T
         llm_chat_max_tokens=_parse_int(
             os.getenv("LLM_CHAT_MAX_TOKENS", ""), "LLM_CHAT_MAX_TOKENS", 1200
         ),
+        access_code=access_code,
+        access_code_attempts=_parse_int(
+            os.getenv("ACCESS_CODE_ATTEMPTS", ""), "ACCESS_CODE_ATTEMPTS", 5
+        ),
+        access_code_window_seconds=_parse_int(
+            os.getenv("ACCESS_CODE_WINDOW_SECONDS", ""), "ACCESS_CODE_WINDOW_SECONDS", 3600
+        ),
+        access_store_file=access_store_file,
     )
