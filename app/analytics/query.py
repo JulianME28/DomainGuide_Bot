@@ -98,6 +98,10 @@ class DonorQuery:
     підсумок), а не звичайною одно-країновою моделлю. `country` при цьому
     порожній. Метричні фільтри застосовуються до всіх країн списку."""
 
+    excluded_countries: tuple[Country, ...] = ()
+    """Країни, які користувач явно виключив: «крім Франції». Фільтруються
+    тією самою країновою моделлю, що й позитивний запит."""
+
     unrecognized: tuple[str, ...] = ()
     """Назви зі списку країн, які не впізнано (лише для запиту-списку). Несе
     їх до картки, щоб показати окремим рядком. На підрахунки не впливає."""
@@ -179,13 +183,18 @@ class DonorQuery:
         """Запит без жодного фільтра — просто «скільки всього донорів».
 
         GEO-фільтр теж вважається фільтром: запит «гео Польща» не порожній."""
-        return self.kind is QueryKind.METRICS and not self.has_metric_filters and self.geo is None
+        return (
+            self.kind is QueryKind.METRICS
+            and not self.has_metric_filters
+            and self.geo is None
+            and not self.excluded_countries
+        )
 
     @property
     def filled_dimensions(self) -> frozenset[str]:
         """Виміри, у яких зараз щось задано."""
         filled: set[str] = set()
-        if self.country is not None:
+        if self.country is not None or self.excluded_countries:
             filled.add(Dimension.COUNTRY)
         if self.languages:
             filled.add(Dimension.LANGUAGE)
@@ -278,6 +287,10 @@ class DonorQuery:
                 parts.append(f"{len(self.countries)} країн")
         elif self.country:
             parts.append(f"{self.country.name_uk} ({self.country.zones_label})")
+        if self.excluded_countries:
+            parts.append(
+                "крім " + ", ".join(country.name_uk for country in self.excluded_countries)
+            )
         if self.languages:
             label = "мова" if len(self.languages) == 1 else "мови"
             parts.append(f"{label} {', '.join(language.name_uk for language in self.languages)}")
@@ -340,6 +353,18 @@ class CoverageQuery:
     def max_threshold(self) -> int:
         """Найвищий названий поріг — саме за ним виноситься вердикт вистачає/ні."""
         return self.thresholds[-1] if self.thresholds else 0
+
+
+@dataclass(frozen=True, slots=True)
+class ComparisonQuery:
+    """Операція ПОРІВНЯННЯ: кілька незалежних зрізів однієї бази.
+
+    Кожен варіант — звичайний повністю валідований DonorQuery. Це зберігає один
+    рушій фільтрації і не дає ШІ вигадати окремий спосіб підрахунку.
+    """
+
+    section_key: str
+    variants: tuple[DonorQuery, ...]
 
 
 def _describe_range(label: str, minimum: float | None, maximum: float | None) -> str:

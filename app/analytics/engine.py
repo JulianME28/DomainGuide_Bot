@@ -302,6 +302,8 @@ def passes_metrics(donor: Donor, query: DonorQuery) -> bool:
     при заданому фільтрі не проходить — так само, як донор без DR не
     проходить фільтр по DR.
     """
+    if any(_in_country_total(donor, country) for country in query.excluded_countries):
+        return False
     if query.geo is not None and not (donor.geo_code == query.geo.code and donor.has_measured_geo):
         # Фільтр по колонці GEO: країна походження трафіку з N>0. GEO=0 або
         # інша країна — не проходить, незалежно від доменної зони й мови.
@@ -498,6 +500,42 @@ class CrossBaseTotal:
         |A| + |B| − |A ∪ B|.
         """
         return sum(count for _title, count in self.per_base) - self.unique
+
+
+@dataclass(frozen=True, slots=True)
+class StopAudit:
+    """Підсумок додаткової перевірки Мордів; доменів назовні не несе."""
+
+    before: int
+    stopped: int
+    allowed: int
+    stop_size: int
+
+
+def audit_stop_list(dataset: Dataset, query: DonorQuery, stop_domains: frozenset[str]) -> StopAudit:
+    """Повторює відбір запиту й вилучає лише донорів зі стоп-листа."""
+    query = normalize_query(dataset, query.replace(section_key="mordy"))
+    selected: list[Donor]
+    if query.is_multi_country:
+        selected = [
+            donor
+            for donor in dataset.donors
+            if passes_metrics(donor, query)
+            and any(
+                _country_claim(donor, country, _is_widespread(country)) is not None
+                for country in query.countries
+            )
+        ]
+    else:
+        selected = [donor for donor in dataset.donors if passes_result(donor, query)]
+
+    stopped = sum(1 for donor in selected if donor.domain in stop_domains)
+    return StopAudit(
+        before=len(selected),
+        stopped=stopped,
+        allowed=len(selected) - stopped,
+        stop_size=len(stop_domains),
+    )
 
 
 def cross_base_total(bases: list[tuple[str, Dataset, DonorQuery]]) -> CrossBaseTotal:

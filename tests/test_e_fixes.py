@@ -38,6 +38,17 @@ class TestНеможливийДіапазон:
         q = parse_free_text("Меджик трафік від 10 до 100").query
         assert (q.traffic_min, q.traffic_max) == (10, 100)
 
+    def test_вище_нижче_та_заперечення_метрики(self):
+        assert parse_free_text("трафік вище 50").query.traffic_min == 50
+        assert parse_free_text("DR нижче 30").query.dr_max == 30
+        query = parse_free_text("Морди не DR від 50").query
+        assert query.dr_min is None and query.dr_max is None
+
+    def test_крім_країни_не_стає_позитивним_фільтром(self):
+        query = parse_free_text("Меджик крім Франції, трафік від 50").query
+        assert query.country is None
+        assert [country.code for country in query.excluded_countries] == ["fr"]
+
     def test_sane_range_напряму(self):
         assert _sane_range(100, 5) == (100, None)  # перевернутий → нижній поріг
         assert _sane_range(10, 100) == (10, 100)  # коректний — без змін

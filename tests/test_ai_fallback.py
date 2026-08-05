@@ -11,7 +11,7 @@ gpt-4o-mini на питальні формулювання віддає рівн
 
 from __future__ import annotations
 
-from app.analytics.query import CoverageQuery, DonorQuery
+from app.analytics.query import ComparisonQuery, CoverageQuery, DonorQuery
 from app.bot.context import ActionLog, BotServices
 from app.bot.execution import (
     AI_EMPTY_TEXT,
@@ -94,9 +94,11 @@ class FakeState:
 class FakeAI:
     """Фейковий сервіс ШІ: повертає заздалегідь задану невдачу (query=None)."""
 
-    def __init__(self, outcome: AIOutcome) -> None:
+    def __init__(self, outcome: AIOutcome, *, answer: str | None = None) -> None:
         self._outcome = outcome
+        self._answer = answer
         self.calls: list[tuple[int, str]] = []
+        self.answer_calls: list[tuple] = []
 
     async def interpret_with_reason(self, user_id: int, text: str) -> AIOutcome:
         self.calls.append((user_id, text))
@@ -104,6 +106,10 @@ class FakeAI:
 
     async def try_interpret(self, user_id: int, text: str):
         return self._outcome.query
+
+    async def answer_question(self, user_id: int, text: str, history=()):
+        self.answer_calls.append((user_id, text, list(history)))
+        return self._answer
 
 
 def make_services(columns_config, *, ai: FakeAI) -> BotServices:
@@ -146,16 +152,17 @@ class TestФолбекУСловник:
         # ШІ таки викликали (спершу він, потім резерв).
         assert ai.calls
 
-    async def test_empty_і_словник_не_зрозумів_показує_ai_empty(self, columns_config):
-        """Явний глухий кут: НІ ШІ, НІ словник → чесний AI_EMPTY_TEXT."""
-        ai = FakeAI(AIOutcome(None, "empty"))
+    async def test_empty_і_словник_не_зрозумів_просить_уточнення(self, columns_config):
+        """Якщо обидва парсери не змогли, консультант уточнює запит."""
+        ai = FakeAI(AIOutcome(None, "empty"), answer="Уточніть мету і країну")
         services = make_services(columns_config, ai=ai)
         message = FakeMessage()
         state = FakeState()
 
         await run_ai_query(message, services, state, 1, "привіт як справи")
 
-        assert AI_EMPTY_TEXT in _all_texts(message)
+        assert any("Уточніть" in text for text in _all_texts(message))
+        assert AI_EMPTY_TEXT not in _all_texts(message)
 
     async def test_ліміт_показує_власний_текст(self, columns_config):
         """reason=limit більше не губиться в загальному AI_FAILED — свій текст."""
@@ -200,8 +207,7 @@ class TestДвіБазиЧерезШІ:
         # У відповіді присутні ОБИДВІ бази.
         assert "Меджик" in combined and "Морди" in combined
 
-    async def test_одна_база_лишається_однією(self, columns_config):
-        """Регресія: без «обидві бази» в тексті — звичайна одно-базова картка."""
+    async def test_без_назви_бази_показує_всі(self, columns_config):
         de = country_by_code("de")
         ai = FakeAI(AIOutcome(DonorQuery(section_key="magic", country=de), "ok"))
         services = make_services(columns_config, ai=ai)
@@ -211,8 +217,35 @@ class TestДвіБазиЧерезШІ:
         await run_ai_query(message, services, state, 1, "німецькі донори")
 
         combined = " ".join(_all_texts(message))
-        assert "ШІ зрозумів як" in combined  # одно-базова картка з підписом ШІ
-        assert "Морди" not in combined  # другу базу не приплітаємо
+        assert "Меджик" in combined and "Морди" in combined
+
+    async def test_або_але_не_обидві_просить_уточнити_до_api(self, columns_config):
+        ai = FakeAI(AIOutcome(DonorQuery(section_key="magic", dr_min=50), "ok"))
+        services = make_services(columns_config, ai=ai)
+        message = FakeMessage()
+
+        await run_ai_query(
+            message,
+            services,
+            FakeState(),
+            1,
+            "Меджик або Морди, але не обидві, DR від 50",
+        )
+
+        assert ai.calls == []
+        assert "Уточніть базу" in " ".join(_all_texts(message))
+
+    async def test_явно_названа_одна_база_лишається_однією(self, columns_config):
+        de = country_by_code("de")
+        ai = FakeAI(AIOutcome(DonorQuery(section_key="magic", country=de), "ok"))
+        services = make_services(columns_config, ai=ai)
+        message = FakeMessage()
+
+        await run_ai_query(message, services, FakeState(), 1, "меджик німецькі донори")
+
+        combined = " ".join(_all_texts(message))
+        assert "ШІ зрозумів як" in combined
+        assert "Морди" not in combined
 
     async def test_2x2_через_ші_обидві_бази_з_країнами(self, columns_config):
         """Пункт III: ШІ віддав мультикраїнний фільтр + «меджик і морди» в тексті →
@@ -229,6 +262,28 @@ class TestДвіБазиЧерезШІ:
         assert "Меджик" in combined and "Морди" in combined
         assert "Розклад по країнах" in combined
         assert "Британія" in combined and "Німеччина" in combined
+
+    async def test_словниковий_fallback_кілька_країн_не_губить_обидві_бази(
+        self, columns_config
+    ):
+        """Регресія зі скриншота: AIOutcome без query переходить у словник,
+        але «Морди і Меджик» має діяти й для списку з чотирьох країн."""
+        ai = FakeAI(AIOutcome(None, "empty"))
+        services = make_services(columns_config, ai=ai)
+        message = FakeMessage()
+
+        await run_ai_query(
+            message,
+            services,
+            FakeState(),
+            1,
+            "німеччина канада франція болгарія морди і меджик",
+        )
+
+        combined = " ".join(_all_texts(message))
+        assert "Меджик" in combined and "Морди" in combined
+        assert "Німеччина" in combined and "Канада" in combined
+        assert "Франція" in combined and "Болгарія" in combined
 
 
 def _coverage_op(section: str, needs: dict[str, int], thresholds=(0,)) -> CoverageQuery:
@@ -272,6 +327,100 @@ class TestОпераціяCoverage:
 
         assert state.current_state is None
         assert (await state.get_data()).get("chat_history") == []
+
+    async def test_операція_для_меджик_і_морди_рахує_обидві_бази(self, columns_config):
+        """Регресія зі скриншота: однобазовий JSON не має губити явне «обидві»."""
+        # Модель мусить повернути одну section і обрала magic. Намір
+        # користувача про дві бази зберігається з оригінального тексту.
+        op = _coverage_op("magic", {"de": 1}, thresholds=(0, 50))
+        ai = FakeAI(AIOutcome(None, "operation", operation=op))
+        services = make_services(columns_config, ai=ai)
+        message = FakeMessage()
+
+        await run_ai_query(
+            message,
+            services,
+            FakeState(),
+            1,
+            "морди і меджик по німеччині від 1 dr і від 1 трафік окремо трафік 50+",
+        )
+
+        combined = " ".join(_all_texts(message))
+        assert "Меджик — покриття за потребою" in combined
+        assert "Морди — покриття за потребою" in combined
+
+
+class TestОпераціяПорівняння:
+    async def test_порівняння_без_бази_рахує_всі_бази(self, columns_config):
+        variants = (
+            DonorQuery(section_key="magic", dr_min=50),
+            DonorQuery(section_key="magic", dr_max=20),
+        )
+        operation = ComparisonQuery(section_key="magic", variants=variants)
+        ai = FakeAI(AIOutcome(None, "operation", operation=operation))
+        services = make_services(columns_config, ai=ai)
+        message = FakeMessage()
+
+        await run_ai_query(
+            message,
+            services,
+            FakeState(),
+            1,
+            "DR від 50 до 20",
+        )
+
+        combined = " ".join(_all_texts(message))
+        assert "Меджик — порівняння" in combined
+        assert "Морди — порівняння" in combined
+
+    async def test_кожен_критерій_показано_окремо(self, columns_config):
+        de = country_by_code("de")
+        variants = (
+            DonorQuery(section_key="magic", country=de, traffic_min=2),
+            DonorQuery(section_key="magic", country=de, traffic_min=30),
+            DonorQuery(section_key="magic", country=de, dr_min=4),
+        )
+        operation = ComparisonQuery(section_key="magic", variants=variants)
+        ai = FakeAI(AIOutcome(None, "operation", operation=operation))
+        services = make_services(columns_config, ai=ai)
+        message = FakeMessage()
+
+        await run_ai_query(
+            message,
+            services,
+            FakeState(),
+            1,
+            "надай по німеччині окремо трафік від 2, трафік від 30 та dr від 4",
+        )
+
+        combined = " ".join(_all_texts(message))
+        assert "3 окремі критерії" in combined
+        assert "трафік від 2" in combined
+        assert "трафік від 30" in combined
+        assert "DR від 4" in combined
+        assert "Кожен критерій пораховано незалежно" in combined
+
+    async def test_порівняння_з_обома_базами_дає_дві_картки(self, columns_config):
+        de = country_by_code("de")
+        variants = (
+            DonorQuery(section_key="magic", country=de, traffic_min=2),
+            DonorQuery(section_key="magic", country=de, dr_min=4),
+        )
+        operation = ComparisonQuery(section_key="magic", variants=variants)
+        ai = FakeAI(AIOutcome(None, "operation", operation=operation))
+        services = make_services(columns_config, ai=ai)
+        message = FakeMessage()
+
+        await run_ai_query(
+            message,
+            services,
+            FakeState(),
+            1,
+            "меджик і морди німеччина: окремо трафік 2 і dr 4",
+        )
+        combined = " ".join(_all_texts(message))
+        assert "Меджик — порівняння" in combined
+        assert "Морди — порівняння" in combined
 
 
 class TestДівертПокриттяЗВільногоТексту:

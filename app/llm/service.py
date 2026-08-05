@@ -17,7 +17,7 @@ from collections import defaultdict, deque
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from app.analytics.query import CoverageQuery, DonorQuery
+from app.analytics.query import ComparisonQuery, CoverageQuery, DonorQuery
 from app.llm.chat import ConversationResponder
 from app.llm.interpreter import LLMInterpreter
 from app.llm.provider import AnthropicProvider, HttpPost, LLMError, LLMProvider, OpenAIProvider
@@ -51,7 +51,7 @@ class AIOutcome:
     query: DonorQuery | None
     reason: str
     intent: str = "filter"
-    operation: CoverageQuery | None = None
+    operation: CoverageQuery | ComparisonQuery | None = None
 
 
 # Стадія помилки виклику (LLMError.stage) → причина для користувача/логіки.

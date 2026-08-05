@@ -22,7 +22,7 @@ from dataclasses import replace
 from typing import Protocol
 
 from app.data.columns import ColumnsConfig, SectionConfig
-from app.data.models import Dataset, Donor
+from app.data.models import Dataset, Donor, StopList
 from app.data.parsing import (
     extract_zone,
     normalize_domain,
@@ -39,6 +39,11 @@ class SectionReader(Protocol):
     """Те, що вміє читати розділ. Реальний — SheetsReader, у тестах — фейковий."""
 
     def read_section(self, section: SectionConfig) -> list[dict[str, str]]: ...
+
+    def read_domain_list(self, sheet_name: str, header: str = "Domain") -> list[str]: ...
+
+
+STOP_MORDY_SHEET = "Стоп Морди"
 
 
 def build_donors(rows: list[dict[str, str]]) -> tuple[tuple[Donor, ...], int]:
@@ -96,6 +101,8 @@ class DonorRepository:
         self._config = config
         self._ttl = ttl_seconds
         self._cache: dict[str, Dataset] = {}
+        self._stop_cache: StopList | None = None
+        self._stop_lock = asyncio.Lock()
         # Окремий замок на кожен розділ: якщо двоє одночасно попросять «Меджик»,
         # у Google піде один запит, а не два.
         self._locks: dict[str, asyncio.Lock] = {}
@@ -108,6 +115,32 @@ class DonorRepository:
         if cached is not None and self._is_fresh(cached):
             return cached
         return await self._load(section_key)
+
+    async def get_stop_domains(self, *, force: bool = False) -> StopList:
+        """Повертає стоп-лист Мордів; звичайні запити його не застосовують."""
+        cached = self._stop_cache
+        if (
+            not force
+            and cached is not None
+            and cached.available
+            and (time.time() - cached.loaded_at) < self._ttl
+        ):
+            return cached
+
+        async with self._stop_lock:
+            cached = self._stop_cache
+            if (
+                not force
+                and cached is not None
+                and cached.available
+                and (time.time() - cached.loaded_at) < self._ttl
+            ):
+                return cached
+            result = await asyncio.to_thread(self._read_stop_blocking)
+            if not result.available and cached is not None and cached.available:
+                return replace(cached, stale=True)
+            self._stop_cache = result
+            return result
 
     async def refresh(self, section_key: str | None = None) -> list[Dataset]:
         """Примусово перечитує дані (кнопка адміна «Оновити дані»).
@@ -266,3 +299,14 @@ class DonorRepository:
             tracks_spam=section.tracks_spam,
             tracks_geo=section.has_geo,
         )
+
+    def _read_stop_blocking(self) -> StopList:
+        now = time.time()
+        try:
+            values = self._reader.read_domain_list(STOP_MORDY_SHEET)
+            domains = frozenset(domain for value in values if (domain := normalize_domain(value)))
+            logger.info("«%s»: завантажено %d доменів.", STOP_MORDY_SHEET, len(domains))
+            return StopList(domains=domains, loaded_at=now)
+        except Exception as exc:
+            logger.error("Помилка читання «%s»: %s", STOP_MORDY_SHEET, exc)
+            return StopList(domains=frozenset(), loaded_at=now, available=False, error=str(exc))

@@ -73,8 +73,8 @@ _NUMBER = r"(\d[\d\s.,]*\s*[kкmм]?)"
 # Оператори порогів. Напрям («від» = мінімум, «до» = максимум) визначається
 # СЛОВОМ, а не позицією, тому «DR від 50 і трафік від 50» дає два мінімуми, а не
 # інвертує один із них.
-_MIN_OP = r"від|понад|мінімум|більш\w*|более|more\s+than|from|>=?"
-_MAX_OP = r"до|максимум|менш\w*|<=?"
+_MIN_OP = r"від|понад|мінімум|більш\w*|вищ\w*|более|more\s+than|from|>=?"
+_MAX_OP = r"до|максимум|менш\w*|нижч\w*|<=?"
 
 # Один поріг: необов'язкове заперечення «не» + оператор + число. Заперечення
 # ІНВЕРТУЄ напрям: «не менше 50» = мінімум 50, «не більше 50» = максимум 50.
@@ -85,7 +85,7 @@ _THRESHOLD = re.compile(
 )
 
 # За якими словами оператор означає МІНІМУM (решта — максимум).
-_MIN_STARTS = ("від", "понад", "мінім", "більш", "более", "more", "from", ">")
+_MIN_STARTS = ("від", "понад", "мінім", "більш", "вищ", "более", "more", "from", ">")
 
 
 def _is_minimum(op: str, negated: bool) -> bool:
@@ -311,7 +311,10 @@ def _read_numbers(
     """
     both = re.search(rf"від\s*{_NUMBER}\s*до\s*{_NUMBER}", window)
     if both:
-        return _sane_range(_to_number(both.group(1)), _to_number(both.group(2)))
+        first, second = _to_number(both.group(1)), _to_number(both.group(2))
+        if first is not None and second is not None and first > second:
+            return second, first
+        return first, second
 
     minimum: float | None = None
     maximum: float | None = None
@@ -366,6 +369,15 @@ def resolve_dimensions(text: str) -> tuple[dict[str, DimensionMatch], str]:
     for compiled in _COMPILED:
         spec = compiled.spec
         keyword = compiled.keyword.search(text)
+
+        # Явне заперечення всього виміру: «не DR від 50» означає
+        # «DR не застосовувати», а не позитивний поріг. Це відрізняється від
+        # «DR не менше 50», де «не» стоїть після назви виміру і змінює
+        # напрямок оператора.
+        if keyword is not None and re.search(r"\bне\s*$", text[: keyword.start()]):
+            found[spec.dimension] = DimensionMatch(spec.dimension, cancelled=True)
+            cancel_spans.append((keyword.start() - 3, keyword.end()))
+            continue
 
         # ПРАВИЛО 2: спершу число (читаємо зі свого вікна, але НЕ затираємо).
         if keyword is not None and spec.numeric:

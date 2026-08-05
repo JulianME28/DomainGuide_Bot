@@ -80,6 +80,7 @@ async def admin_actions(callback: CallbackQuery, services: BotServices) -> None:
         await callback.answer("Оновлюю...")
         await safe_edit(callback, "🔄 Перечитую дані з таблиці...", None)
         datasets = await services.repository.refresh()
+        stop_list = await services.repository.get_stop_domains(force=True)
         lines = ["🔄 <b>Дані оновлено</b>", ""]
         for dataset in datasets:
             if dataset.stale:
@@ -93,6 +94,12 @@ async def admin_actions(callback: CallbackQuery, services: BotServices) -> None:
                 lines.append(f"✅ {dataset.title} — {dataset.count} донорів")
             else:
                 lines.append(f"⚠️ {dataset.title} — {(dataset.error or '')[:150]}")
+        if stop_list.stale:
+            lines.append(f"🕓 Стоп Морди — показую кеш ({len(stop_list.domains)} доменів)")
+        elif stop_list.available:
+            lines.append(f"✅ Стоп Морди — {len(stop_list.domains)} доменів")
+        else:
+            lines.append(f"⚠️ Стоп Морди — {(stop_list.error or '')[:150]}")
         await safe_edit(callback, "\n".join(lines), admin_menu())
         return
 

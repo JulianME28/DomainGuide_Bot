@@ -295,6 +295,30 @@ class SheetsReader:
             f"Зроблено {self._max_attempts} спроби, остання помилка: {_brief(last_exc)}."
         ) from last_exc
 
+    def read_domain_list(self, sheet_name: str, header: str = "Domain") -> list[str]:
+        """Читає одну службову колонку доменів без підключення її як бази.
+
+        Аркуш вітрини має заголовок ``Domain`` у першому рядку; самі домени
+        починаються з другого. Інші колонки фізично не запитуються.
+        """
+        worksheet = self._open_worksheet(sheet_name)
+        try:
+            headers = worksheet.row_values(1)
+            position = _match_header(headers, header)
+            if position is None:
+                raise SheetsError(f"На аркуші «{sheet_name}» немає колонки «{header}».")
+            letter = _column_letter(position)
+            blocks = worksheet.batch_get([f"{letter}2:{letter}"], major_dimension="COLUMNS")
+        except SheetsError:
+            raise
+        except Exception as exc:
+            if _is_transient(exc):
+                raise
+            raise SheetsError(
+                f"Не вдалося прочитати стоп-лист «{sheet_name}»: {type(exc).__name__}: {exc}"
+            ) from exc
+        return list(blocks[0][0]) if blocks and blocks[0] else []
+
     def _read_section_once(self, section: SectionConfig) -> list[dict[str, str]]:
         """Одна спроба прочитати розділ. Мережеві збої летять сирими нагору —
         їх ловить і повторює read_section."""

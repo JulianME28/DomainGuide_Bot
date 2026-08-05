@@ -46,7 +46,12 @@ from app.dictionary.resolver import (
     hint_for_language_mode,
     resolve_language,
 )
-from app.text.cards import render_breakdown, render_country_list_full, render_recommendations
+from app.text.cards import (
+    escape,
+    render_breakdown,
+    render_country_list_full,
+    render_recommendations,
+)
 from app.text.freeform import parse_free_text
 from app.text.prompts import cross_mode_prompt
 
@@ -519,6 +524,61 @@ async def show_nearby(callback: CallbackQuery, services: BotServices, state: FSM
     if callback.message:
         await callback.message.answer(text, reply_markup=result_menu(query.section_key))
     await callback.answer()
+
+
+@router.callback_query(F.data == "res:stop")
+async def check_stop_list(
+    callback: CallbackQuery, services: BotServices, state: FSMContext
+) -> None:
+    """Додаткова, лише добровільна перевірка останнього запиту Мордів на стоп."""
+    query = await _current_query(state)
+    if query is None:
+        await callback.answer("Спочатку зробіть запит", show_alert=True)
+        return
+
+    from app.analytics.engine import audit_stop_list
+
+    await callback.answer()
+    if callback.message is None:
+        return
+    status = await callback.message.answer("⏳ Перевіряю стоп-лист...")
+    dataset = await services.repository.get("mordy")
+    if not dataset.available:
+        await status.edit_text(
+            "⚠️ База «Морди» зараз недоступна для перевірки.",
+            reply_markup=back_to_menu(),
+        )
+        return
+    stop_list = await services.repository.get_stop_domains()
+    if not stop_list.available:
+        await status.edit_text(
+            "⚠️ Не вдалося прочитати аркуш «Стоп Морди».\n\n"
+            f"{escape(stop_list.error or 'Невідома помилка')}",
+            reply_markup=back_to_menu(),
+        )
+        return
+
+    report = await asyncio.to_thread(
+        audit_stop_list, dataset, query.replace(section_key="mordy"), stop_list.domains
+    )
+    stale = (
+        "\n\n⚠️ <i>Використано попередню кешовану версію стоп-листа.</i>" if stop_list.stale else ""
+    )
+    text = (
+        "🚫 <b>Перевірка Мордів на стоп</b>\n\n"
+        f"Знайдено за запитом до перевірки: <b>{report.before:,}</b>\n"
+        f"У стоп-листі: <b>{report.stopped:,}</b>\n"
+        f"✅ Доступно після вилучення: <b>{report.allowed:,}</b>\n\n"
+        f"<i>У стоп-листі зараз {report.stop_size:,} унікальних доменів. "
+        "Звичайні підрахунки бот не змінює — стоп застосовано лише в цьому звіті.</i>"
+        f"{stale}"
+    ).replace(",", " ")
+    services.action_log.add(
+        callback.from_user.id,
+        f"Морди: стоп-перевірка — {report.before} до, {report.stopped} стоп, "
+        f"{report.allowed} дозволено",
+    )
+    await status.edit_text(text, reply_markup=back_to_menu())
 
 
 @router.callback_query(F.data == "res:filter")

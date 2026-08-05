@@ -25,7 +25,7 @@ from app.analytics.engine import (
     MultiCountryResult,
     QueryResult,
 )
-from app.analytics.query import Dimension
+from app.analytics.query import ComparisonQuery, Dimension
 from app.analytics.recommendations import Recommendations, Suggestion
 
 # Назви відкинутих вимірів у формі після «по» — для попередження про те, що
@@ -843,7 +843,43 @@ def render_coverage(result: CoverageResult) -> str:
     return "\n".join(lines)
 
 
-def render_both_bases(query, blocks: list[str], *, explicit_both: bool = False) -> str:
+def render_comparison(operation: ComparisonQuery, results: tuple[QueryResult, ...]) -> str:
+    """Компактна картка незалежних зрізів. Кожен рядок — окремий DonorQuery."""
+    if not results:
+        return "⚠️ Немає валідних критеріїв для порівняння."
+    lines = [
+        f"🧠 <b>Зрозумів як:</b> {len(operation.variants)} окремі критерії",
+        f"🗂 <b>{escape(results[0].section_title)} — порівняння</b>",
+        "",
+    ]
+    for index, result in enumerate(results, start=1):
+        query_label = escape(result.query.describe())
+        if not result.available:
+            lines.append(f"{index}. <b>{query_label}</b> — база недоступна")
+            continue
+        core = result.core
+        details = [f"<b>{number(core.count)}</b> {plural_donors(core.count)}"]
+        if core.avg_dr is not None:
+            details.append(f"сер. DR {number(core.avg_dr)}")
+        if core.avg_traffic is not None:
+            details.append(f"сер. трафік {number(core.avg_traffic)}")
+        lines.append(f"{index}. <b>{query_label}</b>\n   {' · '.join(details)}")
+        unsupported = render_unsupported_note(
+            result.dropped_dimensions, result.section_title, alt_base=None
+        )
+        if unsupported:
+            lines.append(f"   {unsupported}")
+    lines.extend(["", "<i>Кожен критерій пораховано незалежно; цифри не сумуються.</i>"])
+    return "\n".join(lines)
+
+
+def render_both_bases(
+    query,
+    blocks: list[str],
+    *,
+    explicit_both: bool = False,
+    ai_explained: bool = False,
+) -> str:
     """Зведене повідомлення по обох базах: спільний рядок запиту + блоки баз.
 
     Фраза-прохання стосується РОЗБОРУ запиту, а не бази, тож пояснення про неї —
@@ -859,10 +895,8 @@ def render_both_bases(query, blocks: list[str], *, explicit_both: bool = False) 
         if explicit_both
         else "<i>Базу не вказано — перевіряю обидві.</i>"
     )
-    header = [
-        f"🔎 <b>Запит:</b> {escape(query.describe())}",
-        base_note,
-    ]
+    query_title = "🧠 <b>ШІ зрозумів як:</b>" if ai_explained else "🔎 <b>Запит:</b>"
+    header = [f"{query_title} {escape(query.describe())}", base_note]
 
     # Для списку країн — пояснення про ексклюзивність РАЗ у шапці (а не в кожному
     # блоці бази): кожен донор рахується лише в одній країні.

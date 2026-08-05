@@ -14,9 +14,10 @@ import json
 import re
 from dataclasses import dataclass
 
-from app.analytics.query import CoverageQuery, DonorQuery
+from app.analytics.query import ComparisonQuery, CoverageQuery, DonorQuery
 from app.dictionary.countries import COUNTRIES, Country, country_by_code
 from app.dictionary.languages import LANGUAGES, language_by_code
+from app.dictionary.resolver import find_all_countries
 from app.llm.provider import LLMError, LLMProvider
 from app.logging_setup import get_logger
 from app.text.sanitize import sanitize_query
@@ -38,7 +39,7 @@ ALLOWED_INTENTS = frozenset({"filter", "question"})
 # той самий за духом, що й для полів: op поза списком → операцію відкидаємо
 # (тихий фолбек у звичайний фільтр/словник). Поки лише "coverage" (покриття за
 # потребою). Кожен параметр звіряється окремо у read_operation.
-ALLOWED_OPS = frozenset({"coverage"})
+ALLOWED_OPS = frozenset({"coverage", "compare"})
 
 # Кепи операції coverage — щоб валідний JSON не породив непомірну роботу чи
 # абсурдні числа. Значення поза межами відкидаються (не обрізаються тихо в бік
@@ -47,6 +48,14 @@ MAX_COVERAGE_COUNTRIES = 15  # скільки країн у потребі ма�
 MAX_NEED_PER_COUNTRY = 100_000  # верхня межа «скільки треба» на країну
 MAX_THRESHOLDS = 5  # скільки порогів трафіку перевіряти (разом із 0)
 MAX_TRAFFIC_THRESHOLD = 10_000_000  # верхня межа значення порога трафіку
+MAX_COMPARISON_VARIANTS = 6
+
+# Coverage — не просто «кілька країн», а перевірка явно заданої ПОТРЕБИ.
+# Модель не має права вигадувати need=1 лише тому, що країна названа у списку.
+_COVERAGE_INTENT = re.compile(
+    r"\b(?:треба|потрібн\w*|потреб\w*|браку\w*|вистача\w*|покрит\w*|закрива\w*)\b",
+    re.IGNORECASE,
+)
 
 # Числові поля-фільтри, які приймаємо від ШІ. Усе поза цим списком — ігнорується.
 # Стовпця «вихідні» (F) тут немає: якість фільтрується ЛИШЕ по заспамленості
@@ -77,6 +86,8 @@ SYSTEM_PROMPT = (
     '  "section": "magic" або "mordy"\n'
     '  "countries": масив кодів країн (коли країн кілька)\n'
     '  "country": код однієї країни\n'
+    '  "excluded_countries": масив кодів явно виключених країн '
+    '(«крім Франції» → ["fr"])\n'
     '  "languages": масив кодів мов (коли мов кілька; OR-фільтр)\n'
     '  "language": код однієї мови (старий сумісний формат)\n'
     '  "dr_min","dr_max": DR (авторитетність), невід\'ємні числа\n'
@@ -86,6 +97,8 @@ SYSTEM_PROMPT = (
     "НАПРЯМОК ПОРОГІВ (не плутай):\n"
     "• DR і трафік — «більше = краще», тож «від N» → dr_min / traffic_min "
     "(за замовчуванням для них саме мінімум).\n"
+    "  Синоніми мінімуму: «від / понад / більше / вище / не нижче». "
+    "Синоніми максимуму: «до / менше / нижче / не вище».\n"
     "• Заспамленість — «менше = краще», тож за замовчуванням «до N» → spam_max.\n\n"
     "ЗАСПАМЛЕНІСТЬ у базі mordy — це ЄДИНА метрика якості донора (одне поле). "
     "Окремого числового фільтра «вихідні лінки» НЕ існує — НЕ створюй його й НЕ "
@@ -147,10 +160,31 @@ SYSTEM_PROMPT = (
     'вона йде ТІЛЬКИ в "needs". НІКОЛИ не клади її в traffic_min/traffic_max.\n'
     '• Пороги трафіку («20+ трафік», «з трафіком від 50») — у "traffic_thresholds".\n'
     "• «скільки всього» → просто не заважає; поріг 0 бот додасть сам.\n"
+    "• Coverage дозволено ЛИШЕ коли користувач ЯВНО назвав хоча б одну країну. "
+    "Фраза «у нас» означає «у нашій базі» й НІКОЛИ не означає USA/us. Запит "
+    "«чи є у нас 100 донорів у Мордах з трафіком 100+?» — це звичайний filter "
+    'за section=mordy, traffic_min=100, а НЕ coverage і НЕ країна us.\n'
+    "• НІКОЛИ не підставляй need=1 за замовчуванням. Перелік країн без слів "
+    "«треба / потреба / бракує / вистачає / покриття / закриваємо» — це звичайний "
+    "filter по countries, навіть якщо країн багато.\n"
     "Приклад:\n"
     "«морди, треба 20 AU 12 CA 16 UK, скільки всього / 20+ трафік / 50+, чого "
     'бракує» → {"op":"coverage","section":"mordy","needs":{"au":20,"ca":12,'
     '"gb":16},"traffic_thresholds":[20,50]}\n'
+    "\nОПЕРАЦІЯ ПОРІВНЯННЯ (compare). Якщо користувач просить ОКРЕМО порахувати "
+    "два або більше критеріїв/порогів, не зливай їх в один суворий фільтр. Поверни:\n"
+    '  {"op":"compare","section":"magic"|"mordy",\n'
+    '   "country":"<спільний код країни>",\n'
+    '   "criteria":[{"traffic_min":2},{"traffic_min":30},{"dr_min":4}]}\n'
+    "Спільні країна/мова стоять зовні criteria; усередині — ЛИШЕ умова окремого зрізу. "
+    "Одна комбінація кількох метрик без слова «окремо» — це звичайний filter, не compare. "
+    "Але дві несумісні межі однієї метрики — це завжди два окремі зрізи, "
+    "а не помилковий діапазон: «DR від 50 і до 20» → criteria "
+    '[{"dr_min":50},{"dr_max":20}]. Справжній діапазон «DR від 20 до 50» → '
+    '{"dr_min":20,"dr_max":50}.\n'
+    "Приклад: «Німеччина: окремо трафік від 2, трафік від 30 і DR від 4» → "
+    '{"op":"compare","section":"magic","country":"de","criteria":'
+    '[{"traffic_min":2},{"traffic_min":30},{"dr_min":4}]}\n'
 )
 
 
@@ -235,7 +269,7 @@ def _read_coverage_thresholds(raw: object) -> tuple[int, ...]:
     return tuple(sorted({0, *kept}))
 
 
-def read_operation(payload: dict) -> CoverageQuery | None:
+def read_operation(payload: dict) -> CoverageQuery | ComparisonQuery | None:
     """Дістає ВАЛІДОВАНУ операцію з JSON — або None (тоді звичайний фільтр/фолбек).
 
     Whitelist той самий за духом, що й для полів: невідомий op → None; кожен
@@ -253,7 +287,113 @@ def read_operation(payload: dict) -> CoverageQuery | None:
             return None
         thresholds = _read_coverage_thresholds(payload.get("traffic_thresholds"))
         return CoverageQuery(section_key=raw_section, needs=tuple(needs), thresholds=thresholds)
+    if op == "compare":
+        raw_section = payload.get("section")
+        raw_criteria = payload.get("criteria")
+        if raw_section not in ALLOWED_SECTIONS or not isinstance(raw_criteria, list | tuple):
+            return None
+        common = {
+            key: payload[key]
+            for key in (
+                "country",
+                "countries",
+                "excluded_countries",
+                "language",
+                "languages",
+            )
+            if key in payload
+        }
+        variants: list[DonorQuery] = []
+        for raw_criterion in raw_criteria[:MAX_COMPARISON_VARIANTS]:
+            if not isinstance(raw_criterion, dict):
+                continue
+            recognized_criterion_fields = set(ALLOWED_METRIC_FIELDS) | set(_METRIC_ALIASES)
+            if not recognized_criterion_fields.intersection(raw_criterion):
+                continue
+            # Усередині criteria дозволені ЛИШЕ метрики окремого зрізу. Модель
+            # інколи дублює один критерій двічі й кладе в них section=magic/mordy
+            # для фрази «обидві бази». Якщо дозволити criterion перезаписати
+            # section, до виконання вони виглядають різними, а після підстановки
+            # поточної бази стають двома однаковими рядками. Базу визначає лише
+            # верхній рівень + детекція «обидві» в execution; тут її відкидаємо.
+            criterion_metrics = {
+                key: value
+                for key, value in raw_criterion.items()
+                if key in recognized_criterion_fields
+            }
+            criterion_payload = {"section": raw_section, **common, **criterion_metrics}
+            query = interpret_json(criterion_payload)
+            if query is None or query in variants:
+                continue
+            variants.append(query)
+        if len(variants) < 2:
+            return None
+        return ComparisonQuery(section_key=raw_section, variants=tuple(variants))
     return None
+
+
+def _comparison_from_inverted_ranges(payload: dict, text: str = "") -> ComparisonQuery | None:
+    """Рятує несумісні межі, які модель помилково злила в один filter.
+
+    `DR від 50 і до 20` не може бути діапазоном, тому кожну названу
+    межу рахуємо незалежно. Звичайний `від 20 до 50` сюди не потрапляє.
+    Бекенд-захист потрібен, бо одного промпта недостатньо: JSON моделі недовірений.
+    """
+    # Без явного сполучника «і» фраза «від 90 до 10» — це один
+    # інтервал з переставленими межами; його нормалізує sanitize_query.
+    # Лише «від 90 і до 10» просить два незалежні зрізи.
+    if text and re.search(r"\bвід\s+[\d\s.,]+\s+і\s+до\b", text, re.IGNORECASE) is None:
+        return None
+
+    raw_section = payload.get("section")
+    if raw_section not in ALLOWED_SECTIONS:
+        return None
+
+    normalized_metrics = {
+        _METRIC_ALIASES.get(key, key): _coerce_number(value)
+        for key, value in payload.items()
+        if key in ALLOWED_METRIC_FIELDS or key in _METRIC_ALIASES
+    }
+    pairs = (("dr_min", "dr_max"), ("traffic_min", "traffic_max"), ("spam_min", "spam_max"))
+    has_inversion = any(
+        normalized_metrics.get(minimum) is not None
+        and normalized_metrics.get(maximum) is not None
+        and normalized_metrics[minimum] > normalized_metrics[maximum]
+        for minimum, maximum in pairs
+    )
+    if not has_inversion:
+        return None
+
+    common = {
+        key: value
+        for key, value in payload.items()
+        if key not in ALLOWED_METRIC_FIELDS
+        and key not in _METRIC_ALIASES
+        and key not in {"op", "criteria", "intent"}
+    }
+    variants: list[DonorQuery] = []
+    for minimum, maximum in pairs:
+        lower = normalized_metrics.get(minimum)
+        upper = normalized_metrics.get(maximum)
+        criteria: list[dict[str, float]] = []
+        if lower is not None and upper is not None and lower <= upper:
+            criteria.append({minimum: lower, maximum: upper})
+        else:
+            if lower is not None:
+                criteria.append({minimum: lower})
+            if upper is not None:
+                criteria.append({maximum: upper})
+        for criterion in criteria:
+            query = interpret_json({**common, **criterion})
+            if query is not None and query not in variants:
+                variants.append(query)
+            if len(variants) >= MAX_COMPARISON_VARIANTS:
+                break
+        if len(variants) >= MAX_COMPARISON_VARIANTS:
+            break
+    if len(variants) < 2:
+        return None
+    return ComparisonQuery(section_key=raw_section, variants=tuple(variants))
 
 
 def _strip_code_fences(text: str) -> str:
@@ -273,6 +413,7 @@ def _iter_balanced_objects(text: str):
         depth = 0
         in_string = False
         escaped = False
+        end = -1
         for i in range(start, len(text)):
             ch = text[i]
             if in_string:
@@ -291,8 +432,12 @@ def _iter_balanced_objects(text: str):
                 depth -= 1
                 if depth == 0:
                     yield text[start : i + 1]
+                    end = i
                     break
-        start = text.find("{", start + 1)
+        # Шукаємо наступний об'єкт ПІСЛЯ завершення поточного, а не після його
+        # першої дужки. Інакше вкладений `needs: {...}` у coverage помилково
+        # ставав «другим JSON-об'єктом» і запускав непотрібне злиття payload-ів.
+        start = text.find("{", (end + 1) if end >= 0 else (start + 1))
 
 
 def _merge_payloads(objects: list[dict]) -> dict:
@@ -393,6 +538,15 @@ def interpret_json(payload: dict) -> DonorQuery | None:
     if isinstance(payload.get("country"), str):
         single_country = country_by_code(payload["country"].strip().lower())
 
+    excluded_countries: list = []
+    seen_excluded: set[str] = set()
+    if isinstance(payload.get("excluded_countries"), list | tuple):
+        for code in payload["excluded_countries"]:
+            country = country_by_code(code.strip().lower()) if isinstance(code, str) else None
+            if country is not None and country.code not in seen_excluded:
+                seen_excluded.add(country.code)
+                excluded_countries.append(country)
+
     languages: list = []
     if isinstance(payload.get("languages"), list | tuple):
         seen_languages: set[str] = set()
@@ -423,11 +577,18 @@ def interpret_json(payload: dict) -> DonorQuery | None:
         section_key=section,
         countries=tuple(countries) if is_multi else (),
         country=None if is_multi else (countries[0] if countries else single_country),
+        excluded_countries=tuple(excluded_countries),
         languages=tuple(languages),
         **metrics,
     )
 
-    if not (query.country or query.countries or query.languages or query.has_metric_filters):
+    if not (
+        query.country
+        or query.countries
+        or query.excluded_countries
+        or query.languages
+        or query.has_metric_filters
+    ):
         return None
     return query
 
@@ -452,7 +613,7 @@ class Interpretation:
 
     query: DonorQuery | None
     intent: str = "filter"
-    operation: CoverageQuery | None = None
+    operation: CoverageQuery | ComparisonQuery | None = None
 
 
 class LLMInterpreter:
@@ -481,7 +642,40 @@ class LLMInterpreter:
         # її повернула, фільтр НЕ застосовуємо — операція несе власні валідовані
         # параметри, а рахує їх окремий рушій. Це й додатковий захист needs↔traffic:
         # навіть якби у фільтр просочився traffic_min, ми його тут відкидаємо.
-        operation = read_operation(payload)
+        operation = read_operation(payload) or _comparison_from_inverted_ranges(payload, text)
+        # Модель іноді читає українське «у нас» як USA/us і вигадує країну для
+        # coverage. Операція покриття семантично неможлива без ЯВНО названої
+        # країни, тому перевіряємо це за оригінальним текстом, а не довіряємо JSON.
+        # Якщо країни немає, операцію відкидаємо: далі звичайний filter або
+        # словниковий fallback коректно витягне базу й traffic_min.
+        country_check_text = re.sub(r"\bу\s+нас\b", " ", text, flags=re.IGNORECASE)
+        mentioned_countries, _remaining_text = find_all_countries(country_check_text)
+        if isinstance(operation, CoverageQuery):
+            has_coverage_intent = _COVERAGE_INTENT.search(text) is not None
+            if not mentioned_countries or not has_coverage_intent:
+                reason = "немає країни" if not mentioned_countries else "немає наміру потреби"
+                logger.warning("Відкидаю coverage: в оригінальному тексті %s", reason)
+                operation = None
+
+                # Без хоча б однієї явної країни немає безпечної частини coverage,
+                # яку можна перетворити на фільтр: needs і країна можуть бути
+                # повністю вигадані моделлю.
+                if not mentioned_countries:
+                    return Interpretation(query=None, intent=read_intent(payload), operation=None)
+
+                # Не відправляємо такий запит у словник і не втрачаємо корисну
+                # частину відповіді моделі. Перетворюємо хибний coverage на
+                # звичайний валідований filter: країни беремо ТІЛЬКИ з тексту,
+                # а не з вигаданого needs. Явні traffic_thresholds можна безпечно
+                # звести до найсуворішого traffic_min.
+                payload = dict(payload)
+                payload.pop("op", None)
+                payload.pop("needs", None)
+                payload["countries"] = [country.code for country in mentioned_countries]
+                raw_thresholds = _read_coverage_thresholds(payload.pop("traffic_thresholds", ()))
+                nonzero_thresholds = [value for value in raw_thresholds if value > 0]
+                if nonzero_thresholds:
+                    payload["traffic_min"] = max(nonzero_thresholds)
         if operation is not None:
             return Interpretation(query=None, intent=read_intent(payload), operation=operation)
         # ТА САМА санітарна сітка, що й у словника: гасимо інвертований діапазон і

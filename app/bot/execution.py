@@ -12,7 +12,7 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
@@ -26,15 +26,15 @@ from app.analytics.engine import (
     run_query,
     unsupported_dimensions,
 )
-from app.analytics.query import CoverageQuery, Dimension, DonorQuery
+from app.analytics.query import ComparisonQuery, CoverageQuery, Dimension, DonorQuery
 from app.analytics.recommendations import (
     Recommendations,
     build_recommendations,
     list_neighbours,
 )
 from app.bot.context import BotServices
-from app.bot.keyboards import back_to_menu, both_bases_menu, result_menu
-from app.bot.states import query_to_state
+from app.bot.keyboards import back_to_menu, both_bases_menu, result_menu, stop_check_menu
+from app.bot.states import Ask, query_to_state
 from app.llm.service import AIOutcome
 from app.logging_setup import get_logger
 from app.text.cards import (
@@ -42,6 +42,7 @@ from app.text.cards import (
     render_both_bases,
     render_compact_block,
     render_compact_multi_block,
+    render_comparison,
     render_country_breakdown,
     render_country_breakdown_block,
     render_coverage,
@@ -50,7 +51,7 @@ from app.text.cards import (
     render_result,
     render_summary,
 )
-from app.text.freeform import parse_free_text
+from app.text.freeform import BASE_CLARIFICATION_TEXT, parse_free_text
 
 logger = get_logger(__name__)
 
@@ -159,6 +160,7 @@ async def show_both_bases(
     user_id: int,
     *,
     explicit_both: bool = False,
+    ai_explained: bool = False,
 ) -> None:
     """Зведений показ по ОБОХ базах — коли базу в запиті не назвали.
 
@@ -223,7 +225,12 @@ async def show_both_bases(
     # У журнал — лише зведений опис запиту, без доменів.
     services.action_log.add(user_id, f"обидві бази: {query.describe()}")
     await status.edit_text(
-        render_both_bases(query, blocks, explicit_both=explicit_both),
+        render_both_bases(
+            query,
+            blocks,
+            explicit_both=explicit_both,
+            ai_explained=ai_explained,
+        ),
         reply_markup=both_bases_menu(
             bases, ai_retry=bool(query.unrecognized) and services.ai is not None
         ),
@@ -321,7 +328,7 @@ async def show_multi_country(
     services.action_log.add(user_id, render_multi_summary(result))
     await status.edit_text(
         render_multi_country(result, suggestions=suggestions, ai_explained=ai_explained),
-        reply_markup=back_to_menu(),
+        reply_markup=stop_check_menu() if query.section_key == "mordy" else back_to_menu(),
     )
 
 
@@ -439,6 +446,35 @@ async def show_coverage(
         f"покриття {result.section_title}: {len(result.covered)}/{len(result.rows)} закрито",
     )
     await status.edit_text(render_coverage(result), reply_markup=back_to_menu())
+
+
+async def show_comparison(
+    target: Message | CallbackQuery,
+    services: BotServices,
+    operation: ComparisonQuery,
+    user_id: int,
+) -> None:
+    """Рахує кожен варіант окремо тим самим run_query, що й решту запитів."""
+    message = target.message if isinstance(target, CallbackQuery) else target
+    if message is None:
+        raise RuntimeError("Немає повідомлення, у яке можна відповісти")
+    status = await message.answer(STATUS_TEXT)
+    try:
+        dataset = await services.repository.get(operation.section_key)
+        results = await asyncio.to_thread(
+            lambda: tuple(
+                run_query(dataset, query, with_breakdowns=False) for query in operation.variants
+            )
+        )
+    except Exception:
+        logger.exception("Не вдалося порахувати порівняння")
+        await status.edit_text(
+            "⚠️ Не вдалося виконати запит. Спробуйте ще раз або почніть спочатку: /start",
+            reply_markup=back_to_menu(),
+        )
+        return
+    services.action_log.add(user_id, f"порівняння {dataset.title}: {len(results)} критерії")
+    await status.edit_text(render_comparison(operation, results), reply_markup=back_to_menu())
 
 
 async def resolve_with_ai(services: BotServices, user_id: int, text: str) -> AIOutcome | None:
@@ -578,9 +614,11 @@ async def try_dictionary_query(
     await state.set_state(None)
     await state.update_data(**query_to_state(parsed.query, parsed.mentioned))
 
-    show_both = not parsed.query.is_multi_country and (
-        parsed.both_bases or not parsed.section_named
-    )
+    # show_both_bases підтримує і звичайний, і multi-country запит. Старий guard
+    # `not is_multi_country` тут лишився з версії до підтримки «2 бази × N країн»
+    # і ламав саме ШІ-fallback: «Німеччина Канада … Морди і Меджик» ішло лише в
+    # першу базу. Намір обох баз не залежить від кількості названих країн.
+    show_both = parsed.both_bases or not parsed.section_named
     if show_both:
         await show_both_bases(
             target, services, parsed.query, user_id, explicit_both=parsed.both_bases
@@ -614,6 +652,12 @@ async def run_ai_query(
         await message.answer(AI_DISABLED_TEXT, reply_markup=back_to_menu())
         return
 
+    # Не дозволяємо моделі вигадати одну базу з «Меджик або Морди,
+    # але не обидві». Це перевіряється до API-виклику: дешевше і надійніше.
+    if parse_free_text(text.strip()).ambiguous_bases:
+        await message.answer(BASE_CLARIFICATION_TEXT, reply_markup=back_to_menu())
+        return
+
     status = await message.answer(AI_STATUS_TEXT)
     outcome = await services.ai.interpret_with_reason(user_id, text.strip())
 
@@ -623,12 +667,41 @@ async def run_ai_query(
         await _delete_or_ignore(status)
         await state.set_state(None)
         await reset_chat_history(state)
+        parsed_operation_text = parse_free_text(text.strip())
         logger.info(
-            "Маршрут ШІ (користувач %s): операція %s",
+            "Маршрут ШІ (користувач %s): операція %s, обидві бази=%s",
             user_id,
             outcome.operation.__class__.__name__,
+            parsed_operation_text.both_bases,
         )
-        await show_coverage(message, services, outcome.operation, user_id)
+        # Операція містить одну технічну section, бо кожен результат рахується
+        # на окремому Dataset. Якщо користувач явно назвав обидві бази АБО не
+        # назвав жодної, виконуємо ту саму валідовану ШІ-операцію на всіх базах.
+        # Фільтр зі словника не беремо: від нього лише детерміновані сигнали баз.
+        use_all_bases = parsed_operation_text.both_bases or not parsed_operation_text.section_named
+        section_keys = (
+            [section_key for section_key, _title in data_bases(services)]
+            if use_all_bases
+            else [outcome.operation.section_key]
+        )
+        for section_key in section_keys:
+            if isinstance(outcome.operation, ComparisonQuery):
+                comparison = replace(
+                    outcome.operation,
+                    section_key=section_key,
+                    variants=tuple(
+                        replace(query, section_key=section_key)
+                        for query in outcome.operation.variants
+                    ),
+                )
+                await show_comparison(message, services, comparison, user_id)
+            else:
+                await show_coverage(
+                    message,
+                    services,
+                    replace(outcome.operation, section_key=section_key),
+                    user_id,
+                )
         return
 
     if outcome.query is None:
@@ -659,7 +732,24 @@ async def run_ai_query(
         ):
             logger.info("Маршрут ШІ (користувач %s): словниковий фолбек", user_id)
             return
-        # І словник не зрозумів → показуємо текст за причиною невдачі ШІ.
+        # Валідна, але порожня відповідь означає, що запит може бути
+        # нестандартним або неповним. Замість глухого кута даємо консультанту
+        # пояснити обмеження або поставити 1–2 уточнювальні питання. Оригінал
+        # зберігаємо: наступна репліка користувача буде додана до нього і знову
+        # пройде валідований ШІ-інтерпретатор.
+        if outcome.reason == "empty":
+            answer = await chat_reply(services, state, user_id, text.strip())
+            if answer:
+                await state.update_data(ai_pending_text=text.strip())
+                await state.set_state(Ask.ai_query)
+                await message.answer(
+                    f"🧠 {escape(answer)}\n\n<i>Відповідайте на уточнення тут же.</i>",
+                    reply_markup=back_to_menu(),
+                )
+                logger.info("Маршрут ШІ (користувач %s): запит на уточнення", user_id)
+                return
+        # На мережевому збої, ліміті чи нерозбірному JSON не робимо другий
+        # виклик того самого несправного API; показуємо точну причину.
         await message.answer(
             _AI_REASON_TEXT.get(outcome.reason, AI_FAILED_TEXT),
             reply_markup=back_to_menu(),
@@ -672,16 +762,14 @@ async def run_ai_query(
     # Розпізнане ШІ стає активним запитом (як звичайний), стан скидаємо.
     # Донор-запит скидає контекст консультанта: розмова й підрахунок не змішуються.
     await state.set_state(None)
-    await state.update_data(**query_to_state(query))
+    await state.update_data(**query_to_state(query), ai_pending_text="")
     await reset_chat_history(state)
     # Прибираємо статус «Питаю ШІ...» і показуємо картку окремим повідомленням.
     await _delete_or_ignore(status)
 
-    # Варіант C: контракт ШІ одно-базовий, тож «обидві бази» він виразити не може.
-    # Детекцію «обидві бази» беремо зі СЛОВНИКА (parse_free_text) на тому самому
-    # тексті — фільтр лишається від ШІ, а рішення «одна база чи обидві» — від
-    # детермінованої детекції «меджик і морди»/«обидві бази». Межі безпеки й
-    # whitelist без змін: словник теж не бачить донорів.
+    # Контракт ШІ однобазовий, тож рішення «одна база чи всі» беремо з
+    # оригінального тексту: явна одна база → одна; «обидві» або жодної → всі.
+    # Сам фільтр лишається валідованим ШІ-інтерпретатором.
     #
     # Пункт III: show_both_bases тепер уміє й список країн (рахує run_multi_country
     # на кожну базу), тож guard на multi-country знято — «меджик і морди британія
@@ -698,8 +786,15 @@ async def run_ai_query(
             ai_explained=True,
         )
         return
-    if parsed.both_bases:
-        await show_both_bases(message, services, query, user_id, explicit_both=True)
+    if parsed.both_bases or not parsed.section_named:
+        await show_both_bases(
+            message,
+            services,
+            query,
+            user_id,
+            explicit_both=parsed.both_bases,
+            ai_explained=True,
+        )
         return
     await show_result(message, services, query, user_id, ai_explained=True)
 

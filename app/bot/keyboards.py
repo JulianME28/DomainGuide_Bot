@@ -52,12 +52,22 @@ def main_menu(*, is_admin: bool = False) -> InlineKeyboardMarkup:
     builder.button(text="🧱 Морди", callback_data="menu:section:mordy")
     builder.button(text="📩 Сабміти", callback_data="menu:section:submits")
     builder.button(text="🧠 Індивідуальний запит", callback_data="ai:start")
+    builder.button(text="💬 ШІ-консультант", callback_data="ai:chat")
     builder.button(text="📊 Статус", callback_data="menu:status")
     builder.button(text="❓ Допомога", callback_data="menu:help")
     if is_admin:
         builder.button(text="⚙️ Адмінка", callback_data="admin:menu")
 
-    builder.adjust(2, 1, 1, 2, 1)
+    builder.adjust(2, 1, 2, 2, 1)
+    return builder.as_markup()
+
+
+def ai_chat_menu() -> InlineKeyboardMarkup:
+    """Керування живою розмовою: скинути лише контекст або вийти до меню."""
+    builder = InlineKeyboardBuilder()
+    builder.button(text="🧹 Новий діалог", callback_data="ai:chat:new")
+    builder.button(text="⬅️ До меню", callback_data="menu:main")
+    builder.adjust(1, 1)
     return builder.as_markup()
 
 
@@ -123,6 +133,8 @@ def result_menu(
     # Якщо частину запиту не зрозуміли — першою даємо кнопку «уточнити через ШІ».
     if ai_retry:
         builder.button(text="🧠 Уточнити через ШІ", callback_data="ai:retry")
+    if section_key == "mordy":
+        builder.button(text="🚫 Перевірка на стоп", callback_data="res:stop")
     if has_recommendations:
         builder.button(text="🔎 Підібрати близькі донори", callback_data="res:nearby")
     if run_in is not None:
@@ -144,6 +156,7 @@ def result_menu(
     # Усі кнопки по одній у рядок, крім останньої пари («Новий запит» + «До меню»).
     singles = (
         3
+        + int(section_key == "mordy")
         + int(has_recommendations)
         + int(has_country)
         + int(run_in is not None)
@@ -170,8 +183,22 @@ def both_bases_menu(
             builder.button(text=f"🌍 Всі країни: {title}", callback_data=f"res:allcountries:{key}")
         else:
             builder.button(text=f"📊 Детально по {title}", callback_data=f"res:detail:{key}")
+    if any(key == "mordy" for key, _title in bases):
+        builder.button(text="🚫 Перевірка Мордів на стоп", callback_data="res:stop")
     builder.button(text="⬅️ До меню", callback_data="menu:main")
-    builder.adjust(*([1] * (len(bases) + int(ai_retry))), 1)
+    builder.adjust(
+        *([1] * (len(bases) + int(ai_retry) + int(any(k == "mordy" for k, _ in bases)))),
+        1,
+    )
+    return builder.as_markup()
+
+
+def stop_check_menu() -> InlineKeyboardMarkup:
+    """Мінімальне меню під мультикраїнним результатом Мордів."""
+    builder = InlineKeyboardBuilder()
+    builder.button(text="🚫 Перевірка на стоп", callback_data="res:stop")
+    builder.button(text="⬅️ До меню", callback_data="menu:main")
+    builder.adjust(1, 1)
     return builder.as_markup()
 
 

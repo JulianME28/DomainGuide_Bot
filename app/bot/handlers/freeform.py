@@ -29,7 +29,12 @@ from app.bot.execution import (
 from app.bot.keyboards import ai_retry_menu, back_to_menu, cancel_only
 from app.bot.states import Ask, query_to_state
 from app.text.cards import escape, render_not_understood
-from app.text.freeform import CLARIFICATION_TEXT, EMPTY_QUERY_HINT, parse_free_text
+from app.text.freeform import (
+    BASE_CLARIFICATION_TEXT,
+    CLARIFICATION_TEXT,
+    EMPTY_QUERY_HINT,
+    parse_free_text,
+)
 
 router = Router(name="freeform")
 
@@ -59,6 +64,10 @@ async def handle_free_text(message: Message, services: BotServices, state: FSMCo
     # Запам'ятовуємо текст запиту — щоб кнопка «Уточнити через ШІ» могла
     # повторити РІВНО ТОЙ САМИЙ запит через ШІ.
     await state.update_data(last_text=text)
+
+    if parsed.ambiguous_bases:
+        await message.answer(BASE_CLARIFICATION_TEXT, reply_markup=back_to_menu())
+        return
 
     # Запит-ПОКРИТТЯ («потреба по країнах + бракує/вистачає/покриття») словник
     # порахував би хибно (взяв би один поріг за глобальний traffic-фільтр). Тож

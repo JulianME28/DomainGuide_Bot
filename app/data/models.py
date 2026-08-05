@@ -137,3 +137,14 @@ class Dataset:
     @property
     def is_empty(self) -> bool:
         return not self.donors
+
+
+@dataclass(frozen=True, slots=True)
+class StopList:
+    """Нормалізовані домени зі службового аркуша «Стоп Морди»."""
+
+    domains: frozenset[str]
+    loaded_at: float
+    available: bool = True
+    error: str | None = None
+    stale: bool = False

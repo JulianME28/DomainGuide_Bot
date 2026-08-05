@@ -45,7 +45,7 @@ import re
 from dataclasses import dataclass
 
 from app.analytics.query import Dimension, DonorQuery
-from app.dictionary.countries import country_by_zone
+from app.dictionary.countries import Country, country_by_zone
 from app.dictionary.normalize import find_zone_mentions, normalize_text
 from app.dictionary.resolver import (
     find_all_countries,
@@ -115,6 +115,36 @@ _BOTH_BASES = re.compile(
     + r"|усіма\s+базами|всіма\s+базами)"
 )
 
+_COUNTRY_EXCLUSION = re.compile(r"\b(?:крім|окрім|за\s+винятком|не)\s+")
+
+
+def _extract_excluded_countries(text: str) -> tuple[tuple[Country, ...], str]:
+    """Витягує «крім Франції» до окремого негативного фільтра.
+
+    Фразу затираємо до звичайного пошуку країн, щоб виключена країна
+    фізично не могла стати позитивною.
+    """
+    excluded: list[Country] = []
+    seen: set[str] = set()
+    while (marker := _COUNTRY_EXCLUSION.search(text)) is not None:
+        tail = text[marker.end() :]
+        found = find_country_match(tail, allow_short=False)
+        if found is None:
+            break
+        country, match = found
+        # Маркер має стояти безпосередньо біля назви. Інакше голе «не»
+        # в іншій частині речення могло б виключити випадкову країну далі.
+        if tail[: match.start].strip():
+            break
+        if country.code not in seen:
+            seen.add(country.code)
+            excluded.append(country)
+        text = _mask(text, marker.start(), marker.end() + match.end)
+    return tuple(excluded), text
+_AMBIGUOUS_BASES = re.compile(
+    _BASE_TOKEN + r"\s*(?:або|or)\s*" + _BASE_TOKEN + r".*\bне\s+обидв\w*"
+)
+
 # Слова-ПІДСУМОК: просять показати сумарне число по базах.
 # «скільки всього», «всього», «сумарно», «разом», «загалом».
 _SUMMARY = re.compile(r"\b(?:скільки\s+всього|всього|сумарно|разом|загалом)\b")
@@ -141,7 +171,7 @@ _LANG_COUNTRY_DESC = re.compile(r"([а-яіїєґ]+мов)н\w*\s+країн|в�
 # Навмисно вузько: лише однозначні «покривні» слова, щоб не перехоплювати
 # звичайні мультикраїнні запити.
 _COVERAGE_SIGNAL = re.compile(
-    r"(?:бракує|не\s+вистача\w*|вистача\w*|покритт\w*|дефіцит\w*"
+    r"(?:бракує|не\s+вистач\w*|вистач\w*|покритт\w*|дефіцит\w*"
     r"|закрива\w*\s+потреб\w*|чи\s+закрива\w*)"
 )
 
@@ -449,9 +479,14 @@ class ParsedQuery:
     віддати запит ШІ (операція coverage) ухвалює хендлер — і ЛИШЕ для переліку
     країн (≥2) та коли ШІ ввімкнено. Словник такий запит порахував би хибно."""
 
+    ambiguous_bases: bool = False
+    """Користувач назвав кілька баз через «або» і відкинув варіант «обидві».
+    Без уточнення не можна обрати одну базу без вигадування.
+    """
+
     @property
     def needs_clarification(self) -> bool:
-        return not self.understood
+        return self.ambiguous_bases or not self.understood
 
 
 def detect_section(text: str, default: str = "magic") -> tuple[str, bool]:
@@ -477,6 +512,9 @@ def parse_free_text(text: str, *, default_section: str = "magic") -> ParsedQuery
     # витягування вимірів затре частину слів. «(Меджик + Морди)» → обидві бази;
     # «скільки всього» / перелік через «+» → показати сумарне число.
     both_bases = _BOTH_BASES.search(normalized) is not None
+    ambiguous_bases = _AMBIGUOUS_BASES.search(normalized) is not None
+    if ambiguous_bases:
+        both_bases = False
     plus_bases = _PLUS_BASES.search(normalized) is not None
     want_total = plus_bases or _SUMMARY.search(normalized) is not None
     # Сигнал «розбивка по країнах» — на свіжому тексті, до затирання вимірів.
@@ -493,6 +531,9 @@ def parse_free_text(text: str, *, default_section: str = "magic") -> ParsedQuery
     # НАЙПЕРШИМ, щоб слова прохання не стали фільтрами (напр. «англомовні» — мовою).
     normalized, request_hint, request_marker = _extract_request(normalized)
 
+    # Виключені країни витягуємо до звичайного сканування країн.
+    excluded_countries, normalized = _extract_excluded_countries(normalized)
+
     # Крок 0: GEO-фільтр («гео Польща»). Витягуємо ПЕРШИМ і затираємо, щоб
     # країна після «гео» не сприйнялася ще й як звичайний країновий запит.
     geo_country, geo_cancelled, normalized = _extract_geo(normalized)
@@ -504,6 +545,11 @@ def parse_free_text(text: str, *, default_section: str = "magic") -> ParsedQuery
 
     # Крок 0c: прикметник заспамленості («незаспамлені» → 0, «заспамлені» → >0).
     flag_spam_min, flag_spam_max, normalized = _extract_spam_flag(normalized)
+
+    # Окреме незмінене джерело для СПИСКУ країн. Розбір вимірів може
+    # затерти великий шматок біля слова «країнах» або метрики; назви країн
+    # не мають залежати від цього порядку. GEO, зони й виключення вже затерті.
+    countries_source = normalized
 
     # Крок 1: спільний механізм. Повертає що знайдено по кожному виміру
     # і текст, з якого розібране вже прибрано.
@@ -555,7 +601,7 @@ def parse_free_text(text: str, *, default_section: str = "magic") -> ParsedQuery
     # Нерозпізнані слова-претензії на параметр (країна/мова/зона): беремо із
     # залишку, де вже затерто впізнані країни й мови. Так «Атлантида» чи одрук
     # «англьійською» не зникнуть тихо — вони підуть у рядок «не зрозумів».
-    countries_all, leftover = find_all_countries(without_languages)
+    countries_all, leftover = find_all_countries(countries_source)
     unrecognized = _unrecognized_names(leftover)
 
     # СПИСОК країн (≥2 в одному запиті) — окремий шлях: розклад по країнах і
@@ -569,11 +615,13 @@ def parse_free_text(text: str, *, default_section: str = "magic") -> ParsedQuery
         multi_query = DonorQuery(
             section_key=section,
             countries=tuple(countries_all),
+            excluded_countries=excluded_countries,
             languages=multi_languages,
             zones=explicit_zones,
             geo=geo,
             unrecognized=unrecognized,
             countries_note=countries_note,
+            request_hint=request_hint,
             dr_min=dr_min,
             dr_max=dr_max,
             traffic_min=traffic_min,
@@ -595,15 +643,18 @@ def parse_free_text(text: str, *, default_section: str = "magic") -> ParsedQuery
             mentioned=frozenset(multi_mentioned),
             cancelled=frozenset(cancelled | ({Dimension.GEO} if geo_cancelled else set())),
             unrecognized=unrecognized,
+            request_marker=request_marker,
             both_bases=both_bases,
             want_total=want_total,
             wants_country_breakdown=wants_country_breakdown,
             wants_coverage=wants_coverage,
+            ambiguous_bases=ambiguous_bases,
         )
 
     query = DonorQuery(
         section_key=section,
         country=country,
+        excluded_countries=excluded_countries,
         languages=languages,
         geo=geo,
         # Явно попрошена зона («у зоні .co.uk») — найсильніша. Інакше беремо
@@ -631,6 +682,8 @@ def parse_free_text(text: str, *, default_section: str = "magic") -> ParsedQuery
     # потрапляють: їхні фрази розпізнано, але фільтра поки немає.
     mentioned = set(metric_mentions)
     if entities.country or entities.global_zones:
+        mentioned.add(Dimension.COUNTRY)
+    if excluded_countries:
         mentioned.add(Dimension.COUNTRY)
     if languages:
         mentioned.add(Dimension.LANGUAGE)
@@ -665,6 +718,7 @@ def parse_free_text(text: str, *, default_section: str = "magic") -> ParsedQuery
         want_total=want_total,
         wants_country_breakdown=wants_country_breakdown,
         wants_coverage=wants_coverage,
+        ambiguous_bases=ambiguous_bases,
     )
 
 
@@ -678,6 +732,12 @@ CLARIFICATION_TEXT = (
     "• <code>всі мови</code> · <code>будь-яка країна</code> · <code>DR не важливий</code>\n\n"
     "⚠️ Попередній запит поки лишається активним — подивитися його можна "
     "командою /filters, скинути повністю — /reset."
+)
+
+BASE_CLARIFICATION_TEXT = (
+    "🤔 <b>Уточніть базу.</b>\n\n"
+    "Ви написали «Меджик або Морди», але не обидві. "
+    "Напишіть, яку саме базу використати: <b>Меджик</b> чи <b>Морди</b>."
 )
 
 

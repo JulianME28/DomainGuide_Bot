@@ -15,6 +15,8 @@ freeform.py). Фільтр від ШІ (interpret_json) раніше цю обр
 
 from __future__ import annotations
 
+import re
+
 from app.analytics.query import DonorQuery
 from app.text.dimensions import _sane_range
 from app.text.freeform import find_negated_zones
@@ -35,9 +37,21 @@ def sanitize_query(query: DonorQuery | None, text: str) -> DonorQuery | None:
     if query is None:
         return None
 
-    dr_min, dr_max = _sane_range(query.dr_min, query.dr_max)
-    traffic_min, traffic_max = _sane_range(query.traffic_min, query.traffic_max)
-    spam_min, spam_max = _sane_range(query.spam_min, query.spam_max)
+    # Лише явна неперервна конструкція «від N до M» є одним інтервалом і
+    # дозволяє переставити межі. Фраза «трафік від 100 + до 5 вихідних»
+    # сюди не потрапляє: між числами є інша умова.
+    explicit_interval = re.search(
+        r"\bвід\s+\d[\d\s.,]*\s+до\s+\d[\d\s.,]*", text, re.IGNORECASE
+    )
+
+    def sane(minimum, maximum):
+        if explicit_interval and minimum is not None and maximum is not None and minimum > maximum:
+            return maximum, minimum
+        return _sane_range(minimum, maximum)
+
+    dr_min, dr_max = sane(query.dr_min, query.dr_max)
+    traffic_min, traffic_max = sane(query.traffic_min, query.traffic_max)
+    spam_min, spam_max = sane(query.spam_min, query.spam_max)
 
     zones = query.zones
     negated = set(find_negated_zones(text))

@@ -659,10 +659,12 @@ class SpyAI:
     reason дозволяє в тесті задати причину невдачі (нерозбірне / порожнє /
     недоступне), щоб перевірити відповідні повідомлення бота."""
 
-    def __init__(self, result=None, *, reason=None) -> None:
+    def __init__(self, result=None, *, reason=None, answer="Уточніть, будь ласка, країну і мету.") -> None:
         self.result = result
         self.reason = reason or ("ok" if result is not None else "unavailable")
+        self.answer = answer
         self.calls: list[tuple] = []
+        self.answer_calls: list[tuple] = []
 
     async def try_interpret(self, user_id, text):
         return (await self.interpret_with_reason(user_id, text)).query
@@ -672,6 +674,10 @@ class SpyAI:
 
         self.calls.append((user_id, text))
         return AIOutcome(self.result, self.reason)
+
+    async def answer_question(self, user_id, text, history=()):
+        self.answer_calls.append((user_id, text, list(history)))
+        return self.answer
 
 
 class TestШІФолбек:
@@ -794,18 +800,20 @@ class TestІндивідуальнийЗапит:
         ]
         assert any("не вдалося розібрати" in t.lower() for t in shown)
 
-    async def test_порожній_фільтр_окреме_повідомлення(self, repository, columns_config):
-        """Валідний JSON, але нічого не впізнано → «не зрозумів, що відфільтрувати»."""
+    async def test_порожній_фільтр_просить_уточнення(self, repository, columns_config):
+        """Валідний JSON без фільтра → живе уточнення, а не глухий кут."""
         from app.bot.handlers.ai import receive_ai_query
 
-        services = self._services(repository, columns_config, SpyAI(None, reason="empty"))
+        spy = SpyAI(None, reason="empty")
+        services = self._services(repository, columns_config, spy)
         message = FakeMessage(text="абракадабра")  # не розбирає й словник
         await receive_ai_query(message, services, FakeState({}))
 
         shown = [e[0] for sent in message.sents for e in sent.edits] + [
             a[0] for a in message.answers
         ]
-        assert any("відфільтрувати" in t for t in shown)
+        assert any("Уточніть" in t for t in shown)
+        assert spy.answer_calls
 
     async def test_ручний_виклик_рахується_лічильником(self, repository, columns_config):
         """Ліміт/лічильник (наявні) застосовуються й до ручних викликів ШІ."""

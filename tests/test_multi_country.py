@@ -14,6 +14,7 @@ from app.analytics.query import DonorQuery
 from app.data.models import Dataset, Donor
 from app.dictionary.countries import country_by_code
 from app.dictionary.languages import language_by_code
+from app.dictionary.resolver import find_all_countries, find_all_languages
 from app.text.cards import render_multi_country
 from app.text.freeform import parse_free_text
 
@@ -281,3 +282,12 @@ class TestСуміжніУСписку:
         query = DonorQuery(section_key="magic", countries=tuple(country_by_code(c) for c in codes))
         _result, suggestions = _compute_multi(magic, query)
         assert suggestions == (), "для списку ≥7 країн суміжні не показуємо"
+def test_канада_і_британія_не_губляться_як_мова():
+    languages, _remaining = find_all_languages("Канада, Британія")
+    countries, _remaining = find_all_countries("Канада, Британія")
+
+    assert languages == []
+    assert {country.code for country in countries} == {"ca", "gb"}
+
+    parsed = parse_free_text("Меджик: Канада, Британія; DR від 40")
+    assert {country.code for country in parsed.query.countries} == {"ca", "gb"}

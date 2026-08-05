@@ -215,9 +215,11 @@ class FakeReader:
         self,
         rows_by_section: dict[str, list[dict[str, str]]] | None = None,
         errors: dict[str, str] | None = None,
+        domain_lists: dict[str, list[str]] | None = None,
     ) -> None:
         self.rows_by_section = rows_by_section or {}
         self.errors = errors or {}
+        self.domain_lists = domain_lists or {}
         self.calls: list[str] = []
         # Розділи, читання яких зараз падає з мережевою помилкою — для
         # перевірки, що репозиторій віддає кеш замість «база недоступна».
@@ -238,3 +240,8 @@ class FakeReader:
         if section.key in self.errors:
             raise RuntimeError(self.errors[section.key])
         return [dict(row) for row in self.rows_by_section.get(section.key, [])]
+
+    def read_domain_list(self, sheet_name: str, header: str = "Domain") -> list[str]:
+        del header
+        self.calls.append(sheet_name)
+        return list(self.domain_lists.get(sheet_name, []))

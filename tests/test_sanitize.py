@@ -17,18 +17,17 @@ class TestІнвертованийДіапазон:
     def test_dr_40_20_лишає_нижній_поріг(self):
         q = DonorQuery(section_key="magic", dr_min=40, dr_max=20)
         s = sanitize_query(q, "меджик британія DR від 40 до 20")
-        assert s.dr_min == 40
-        assert s.dr_max is None  # не 0-результат
+        assert (s.dr_min, s.dr_max) == (20, 40)
 
     def test_трафік_інверсія(self):
         q = DonorQuery(section_key="magic", traffic_min=100, traffic_max=5)
         s = sanitize_query(q, "трафік від 100 до 5")
-        assert (s.traffic_min, s.traffic_max) == (100, None)
+        assert (s.traffic_min, s.traffic_max) == (5, 100)
 
     def test_спам_інверсія(self):
         q = DonorQuery(section_key="mordy", spam_min=50, spam_max=10)
         s = sanitize_query(q, "заспамленість від 50 до 10")
-        assert (s.spam_min, s.spam_max) == (50, None)
+        assert (s.spam_min, s.spam_max) == (10, 50)
 
     def test_коректний_діапазон_не_чіпаємо(self):
         q = DonorQuery(section_key="magic", dr_min=10, dr_max=50)

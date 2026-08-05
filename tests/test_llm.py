@@ -12,13 +12,188 @@ from __future__ import annotations
 
 import pytest
 
-from app.analytics.query import DonorQuery
+from app.analytics.query import ComparisonQuery, DonorQuery
 from app.dictionary.countries import country_by_code
-from app.llm.interpreter import SYSTEM_PROMPT, LLMInterpreter, interpret_json
+from app.llm.interpreter import (
+    SYSTEM_PROMPT,
+    LLMInterpreter,
+    _comparison_from_inverted_ranges,
+    _parse_json,
+    interpret_json,
+    read_operation,
+)
 from app.llm.provider import AnthropicProvider, LLMError, OpenAIProvider
 from app.llm.service import build_ai_service
 from app.settings import Settings
 from app.text.freeform import parse_free_text
+
+
+class TestОпераціяПорівняння:
+    def test_інвертований_dr_стає_двома_незалежними_зрізами(self):
+        operation = _comparison_from_inverted_ranges(
+            {"section": "magic", "country": "de", "dr_min": 50, "dr_max": 20}
+        )
+
+        assert isinstance(operation, ComparisonQuery)
+        assert len(operation.variants) == 2
+        assert operation.variants[0].dr_min == 50
+        assert operation.variants[0].dr_max is None
+        assert operation.variants[1].dr_min is None
+        assert operation.variants[1].dr_max == 20
+        assert all(query.country.code == "de" for query in operation.variants)
+
+    def test_валідний_діапазон_не_розбивається(self):
+        assert (
+            _comparison_from_inverted_ranges(
+                {"section": "magic", "country": "de", "dr_min": 20, "dr_max": 50}
+            )
+            is None
+        )
+
+    async def test_інтерпретатор_рятує_злиті_межі(self):
+        response = anthropic_response(
+            '{"section":"magic","country":"de","dr_min":50,"dr_max":20}'
+        )
+        interpreter = LLMInterpreter(
+            AnthropicProvider("secret", "model", 10, http_post=fake_post(response))
+        )
+
+        interpretation = await interpreter.interpret_full("DR від 50 і до 20 по Німеччині")
+
+        assert interpretation.query is None
+        assert isinstance(interpretation.operation, ComparisonQuery)
+        assert len(interpretation.operation.variants) == 2
+
+    def test_три_окремі_критерії_стають_трьома_запитами(self):
+        operation = read_operation(
+            {
+                "op": "compare",
+                "section": "magic",
+                "country": "de",
+                "criteria": [{"traffic_min": 2}, {"traffic_min": 30}, {"dr_min": 4}],
+            }
+        )
+        assert isinstance(operation, ComparisonQuery)
+        assert len(operation.variants) == 3
+        assert all(query.country.code == "de" for query in operation.variants)
+        assert operation.variants[0].traffic_min == 2
+        assert operation.variants[1].traffic_min == 30
+        assert operation.variants[2].dr_min == 4
+
+    def test_невідомі_і_дубльовані_критерії_не_створюють_операцію(self):
+        assert (
+            read_operation(
+                {
+                    "op": "compare",
+                    "section": "magic",
+                    "country": "de",
+                    "criteria": [{"traffic_min": 2}, {"traffic_min": 2}, {"nonsense": 3}],
+                }
+            )
+            is None
+        )
+
+    def test_один_критерій_дубльований_моделлю_по_базах_не_стає_compare(self):
+        """Регресія зі скриншота: «Меджик + Морди, DR 30» — один критерій,
+        section усередині criteria не повинен маскувати його дублювання."""
+        assert (
+            read_operation(
+                {
+                    "op": "compare",
+                    "section": "magic",
+                    "country": "gb",
+                    "criteria": [
+                        {"section": "magic", "dr_min": 30},
+                        {"section": "mordy", "dr_min": 30},
+                    ],
+                }
+            )
+            is None
+        )
+
+    def test_промпт_явно_описує_compare(self):
+        assert '"op":"compare"' in SYSTEM_PROMPT
+        assert "окремо" in SYSTEM_PROMPT.lower()
+        assert "DR від 50 і до 20" in SYSTEM_PROMPT
+
+    def test_ші_може_повернути_виключену_країну(self):
+        query = interpret_json(
+            {"section": "magic", "excluded_countries": ["fr"], "traffic_min": 50}
+        )
+
+        assert query is not None
+        assert [country.code for country in query.excluded_countries] == ["fr"]
+        assert query.traffic_min == 50
+        assert "excluded_countries" in SYSTEM_PROMPT
+
+
+class TestCoverageНеВигадуєКраїну:
+    async def test_у_нас_не_перетворюється_на_usa(self):
+        response = anthropic_response(
+            '{"op":"coverage","section":"mordy","needs":{"us":100},'
+            '"traffic_thresholds":[100]}'
+        )
+        interpreter = LLMInterpreter(
+            AnthropicProvider("secret", "model", 10, http_post=fake_post(response))
+        )
+
+        interpretation = await interpreter.interpret_full(
+            "чи є у нас 100 донорів в мордах з трафіком 100+?"
+        )
+
+        assert interpretation.operation is None
+        assert interpretation.query is None
+
+    def test_промпт_пояснює_що_у_нас_не_us(self):
+        assert "у нас" in SYSTEM_PROMPT
+        assert "USA/us" in SYSTEM_PROMPT
+
+    def test_вкладений_needs_не_рахується_другим_json(self):
+        payload = _parse_json(
+            '{"op":"coverage","section":"mordy","needs":{"de":100},'
+            '"traffic_thresholds":[100]}'
+        )
+        assert payload == {
+            "op": "coverage",
+            "section": "mordy",
+            "needs": {"de": 100},
+            "traffic_thresholds": [100],
+        }
+
+    async def test_список_країн_без_потреби_не_отримує_need_один(self):
+        response = anthropic_response(
+            '{"op":"coverage","section":"magic","needs":'
+            '{"de":1,"ca":1,"fr":1,"bg":1},"traffic_thresholds":[]}'
+        )
+        interpreter = LLMInterpreter(
+            AnthropicProvider("secret", "model", 10, http_post=fake_post(response))
+        )
+
+        interpretation = await interpreter.interpret_full(
+            "німеччина канада франція болгарія морди і меджик"
+        )
+
+        assert interpretation.operation is None
+        assert interpretation.query is not None
+        assert {country.code for country in interpretation.query.countries} == {
+            "de",
+            "ca",
+            "fr",
+            "bg",
+        }
+
+    async def test_слово_треба_залишає_справжній_coverage(self):
+        response = anthropic_response(
+            '{"op":"coverage","section":"magic","needs":{"de":2},'
+            '"traffic_thresholds":[50]}'
+        )
+        interpreter = LLMInterpreter(
+            AnthropicProvider("secret", "model", 10, http_post=fake_post(response))
+        )
+        interpretation = await interpreter.interpret_full(
+            "Німеччина: треба 2 донори, чи вистачає з трафіком 50+?"
+        )
+        assert interpretation.operation is not None
 
 
 def anthropic_response(text: str, *, stop_reason: str | None = None) -> dict:
@@ -459,13 +634,14 @@ class TestСанітарнаСіткаШІ:
         post = fake_post(anthropic_response(json_text))
         return LLMInterpreter(AnthropicProvider("k", "m", 1, http_post=post))
 
-    async def test_інвертований_dr_через_ші_не_нуль(self):
-        q = await self._interp(
+    async def test_інвертований_dr_без_і_стає_інтервалом(self):
+        interpretation = await self._interp(
             '{"section":"magic","country":"gb","dr_min":40,"dr_max":20}'
-        ).interpret("меджик британія DR від 40 до 20")
-        assert q is not None
-        assert q.dr_min == 40
-        assert q.dr_max is None  # інверсію погашено — не тихий нуль
+        ).interpret_full("меджик британія DR від 40 до 20")
+        assert interpretation.operation is None
+        assert interpretation.query is not None
+        assert interpretation.query.dr_min == 20
+        assert interpretation.query.dr_max == 40
 
     async def test_заперечена_зона_через_ші_знімається(self):
         q = await self._interp('{"section":"magic","country":"de","zones":[".com"]}').interpret(

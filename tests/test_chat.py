@@ -298,6 +298,45 @@ class TestМаршрутизаціяЧат:
         assert ai.answer_calls
         assert AI_CHAT_FAILED_TEXT in _all_texts(message)
 
+    async def test_порожній_нестандартний_запит_просить_уточнення(self, columns_config):
+        ai = FakeAI(AIOutcome(None, "empty", intent="filter"), answer="Яка країна і ціль?")
+        services = _services(columns_config, ai)
+        state = FakeState()
+        message = FakeMessage()
+
+        await run_ai_query(message, services, state, 1, "підбери мені щось дуже якісне")
+
+        assert ai.answer_calls
+        assert "Яка країна" in " ".join(_all_texts(message))
+        assert (await state.get_data())["ai_pending_text"] == "підбери мені щось дуже якісне"
+
+
+class TestЯвнийЖивийЧат:
+    async def test_повідомлення_йде_одразу_консультанту(self, columns_config):
+        from app.bot.handlers.ai import receive_ai_chat
+
+        ai = FakeAI(AIOutcome(None, "empty"), answer="Почнімо з вашої цілі.")
+        services = _services(columns_config, ai)
+        state = FakeState()
+        message = FakeMessage("Порадь стратегію")
+
+        await receive_ai_chat(message, services, state)
+
+        assert ai.answer_calls == [(1, "Порадь стратегію", [])]
+        assert "Почнімо" in " ".join(_all_texts(message))
+
+    async def test_живий_чат_памятає_попередній_обмін(self, columns_config):
+        from app.bot.handlers.ai import receive_ai_chat
+
+        ai = FakeAI(AIOutcome(None, "empty"), answer="Добре")
+        services = _services(columns_config, ai)
+        state = FakeState()
+        await receive_ai_chat(FakeMessage("Моя ніша — SaaS"), services, state)
+        await receive_ai_chat(FakeMessage("Що порадиш?"), services, state)
+
+        history = ai.answer_calls[1][2]
+        assert any(item["content"] == "Моя ніша — SaaS" for item in history)
+
 
 class TestБагатоходовість:
     """Контекст розмови тримається в FSM, скидається на донор-запиті, обрізається."""

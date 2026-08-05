@@ -49,6 +49,11 @@ class Ask(StatesGroup):
     ai_query = State()
     """Режим «Індивідуальний запит»: текст ЗАВЖДИ йде через ШІ, не словником."""
 
+    ai_chat = State()
+    """Живий діалог з ШІ-консультантом: кожне наступне текстове
+    повідомлення йде прямо в розмовну смугу з контекстом попередніх реплік.
+    """
+
 
 # ---------------------------------------------------------------------------
 # Запит ↔ пам'ять бота
@@ -77,6 +82,8 @@ def query_to_state(query: DonorQuery, fresh: frozenset[str] | None = None) -> di
         FRESH_KEY: sorted(query.filled_dimensions if fresh is None else fresh),
         "section_key": query.section_key,
         "country_code": query.country.code if query.country else None,
+        "country_codes": [country.code for country in query.countries],
+        "excluded_country_codes": [country.code for country in query.excluded_countries],
         "language_codes": [language.code for language in query.languages],
         # Compatibility with state produced by older bot versions.
         "language_code": query.language.code if query.language else None,
@@ -94,6 +101,13 @@ def query_to_state(query: DonorQuery, fresh: frozenset[str] | None = None) -> di
 def query_from_state(data: dict[str, Any], *, default_section: str = "magic") -> DonorQuery:
     """Збирає запит назад із збережених значень."""
     country_code = data.get("country_code")
+    country_codes = data.get("country_codes")
+    countries = tuple(
+        country
+        for code in (country_codes if isinstance(country_codes, list) else ())
+        if isinstance(code, str)
+        if (country := country_by_code(code)) is not None
+    )
     language_code = data.get("language_code")
     language_codes = data.get("language_codes")
     languages = tuple(
@@ -107,10 +121,19 @@ def query_from_state(data: dict[str, Any], *, default_section: str = "magic") ->
         languages = (legacy_language,) if legacy_language is not None else ()
 
     geo_code = data.get("geo_code")
+    excluded_country_codes = data.get("excluded_country_codes")
+    excluded_countries = tuple(
+        country
+        for code in (excluded_country_codes if isinstance(excluded_country_codes, list) else ())
+        if isinstance(code, str)
+        if (country := country_by_code(code)) is not None
+    )
 
     return DonorQuery(
         section_key=data.get("section_key") or default_section,
         country=country_by_code(country_code) if country_code else None,
+        countries=countries,
+        excluded_countries=excluded_countries,
         languages=languages,
         geo=country_by_code(geo_code) if geo_code else None,
         zones=tuple(data.get("zones") or ()),
