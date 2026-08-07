@@ -659,7 +659,9 @@ class SpyAI:
     reason дозволяє в тесті задати причину невдачі (нерозбірне / порожнє /
     недоступне), щоб перевірити відповідні повідомлення бота."""
 
-    def __init__(self, result=None, *, reason=None, answer="Уточніть, будь ласка, країну і мету.") -> None:
+    def __init__(
+        self, result=None, *, reason=None, answer="Уточніть, будь ласка, країну і мету."
+    ) -> None:
         self.result = result
         self.reason = reason or ("ok" if result is not None else "unavailable")
         self.answer = answer
@@ -862,11 +864,23 @@ class TestУточнитиЧерезШІ:
         _text, markup = message.answers[-1]
         assert "ai:retry" not in _callback_data(markup)
 
-    async def test_кнопки_немає_на_зрозумілому_запиті(self, repository, columns_config):
-        """Повністю зрозумілий запит → у меню картки немає «уточнити через ШІ»."""
+    async def test_кнопка_є_на_зрозумілому_вільному_запиті(self, repository, columns_config):
+        """Нове правило: на КОЖНІЙ словниковій/вільній картці (ШІ ввімкнено) є
+        «уточнити через ШІ» — навіть коли запит повністю зрозумілий. Кнопка
+        страхує: дає переграти через ШІ будь-коли."""
         from app.bot.handlers.freeform import handle_free_text
 
         services = self._services(repository, columns_config, SpyAI(None))
+        message = FakeMessage(text="Меджик Німеччина")
+        await handle_free_text(message, services, FakeState({}))
+        _text, markup = message.sents[-1].edits[-1]
+        assert "ai:retry" in _callback_data(markup)
+
+    async def test_кнопки_немає_на_зрозумілому_без_ші(self, repository, columns_config):
+        """ШІ вимкнено → кнопки нема навіть на зрозумілому вільному запиті."""
+        from app.bot.handlers.freeform import handle_free_text
+
+        services = self._services(repository, columns_config, None)
         message = FakeMessage(text="Меджик Німеччина")
         await handle_free_text(message, services, FakeState({}))
         _text, markup = message.sents[-1].edits[-1]
@@ -893,6 +907,47 @@ class TestУточнитиЧерезШІ:
         callback = FakeCallback("ai:retry", message=FakeMessage())
         await retry_via_ai(callback, services, FakeState({}))  # немає last_text
         assert any("Немає запиту" in (a[0] or "") for a in callback.message.answers)
+
+    async def test_кнопка_на_мультикраїнній_картці_з_не_впізнав(self, repository, columns_config):
+        """САМЕ БАГ: перелік країн Мордів + нерозпізнане слово → мультикраїнна
+        картка. Раніше на ній кнопки не було (stop_check_menu без ai_retry).
+        Тепер кнопка «Уточнити через ШІ» є — можна переграти через ШІ."""
+        from app.bot.handlers.freeform import handle_free_text
+
+        services = self._services(repository, columns_config, SpyAI(None))
+        message = FakeMessage(text="морди британія німеччина абракадабра")
+        await handle_free_text(message, services, FakeState({}))
+        _text, markup = message.sents[-1].edits[-1]
+        assert "ai:retry" in _callback_data(markup)
+
+    async def test_кнопки_немає_на_мультикраїні_без_ші(self, repository, columns_config):
+        """ШІ вимкнено → на мультикраїнній картці кнопки нема (нема куди вести)."""
+        from app.bot.handlers.freeform import handle_free_text
+
+        services = self._services(repository, columns_config, None)
+        message = FakeMessage(text="морди британія німеччина абракадабра")
+        await handle_free_text(message, services, FakeState({}))
+        _text, markup = message.sents[-1].edits[-1]
+        assert "ai:retry" not in _callback_data(markup)
+
+    def test_wants_ai_retry_не_дублює_на_ші_картці(self, columns_config, repository):
+        """На картці, що вже пройшла ШІ (ai_explained), кнопки нема — не дублюємо."""
+        from app.bot.execution import _wants_ai_retry
+
+        services = self._services(repository, columns_config, SpyAI(None))
+        query = DonorQuery(section_key="magic", country=country_by_code("de"))
+        # Через ШІ → False навіть із ai_refine.
+        assert _wants_ai_retry(services, query, ai_explained=True, ai_refine=True) is False
+        # Словникова картка з вільного тексту → True.
+        assert _wants_ai_retry(services, query, ai_explained=False, ai_refine=True) is True
+        # Кнопкова картка (не вільний текст, усе зрозуміло) → False.
+        assert _wants_ai_retry(services, query, ai_explained=False, ai_refine=False) is False
+
+    def test_stop_check_menu_має_кнопку_за_прапорцем(self):
+        from app.bot.keyboards import stop_check_menu
+
+        assert "ai:retry" in _callback_data(stop_check_menu(ai_retry=True))
+        assert "ai:retry" not in _callback_data(stop_check_menu())
 
     # -- Повний оригінальний текст у кнопці «Уточнити через ШІ» ----------------
 

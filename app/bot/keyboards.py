@@ -193,12 +193,19 @@ def both_bases_menu(
     return builder.as_markup()
 
 
-def stop_check_menu() -> InlineKeyboardMarkup:
-    """Мінімальне меню під мультикраїнним результатом Мордів."""
+def stop_check_menu(*, ai_retry: bool = False) -> InlineKeyboardMarkup:
+    """Мінімальне меню під мультикраїнним результатом Мордів.
+
+    ai_retry — додати «🧠 Уточнити через ШІ» (результат зі словника/вільного тексту
+    й ШІ ввімкнено): дозволяє переграти той самий запит через ШІ. Раніше цього
+    параметра тут не було — тому на мультикраїнній картці з «не впізнав» кнопки
+    бракувало (це й був баг)."""
     builder = InlineKeyboardBuilder()
+    if ai_retry:
+        builder.button(text="🧠 Уточнити через ШІ", callback_data="ai:retry")
     builder.button(text="🚫 Перевірка на стоп", callback_data="res:stop")
     builder.button(text="⬅️ До меню", callback_data="menu:main")
-    builder.adjust(1, 1)
+    builder.adjust(*([1] * (2 + int(ai_retry))))
     return builder.as_markup()
 
 

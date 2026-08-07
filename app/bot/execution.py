@@ -33,7 +33,13 @@ from app.analytics.recommendations import (
     list_neighbours,
 )
 from app.bot.context import BotServices
-from app.bot.keyboards import back_to_menu, both_bases_menu, result_menu, stop_check_menu
+from app.bot.keyboards import (
+    ai_retry_menu,
+    back_to_menu,
+    both_bases_menu,
+    result_menu,
+    stop_check_menu,
+)
 from app.bot.states import Ask, query_to_state
 from app.llm.service import AIOutcome
 from app.logging_setup import get_logger
@@ -71,6 +77,23 @@ class ExecutedQuery:
     text: str
     alt_base: tuple[str, str] | None = None
     """(ключ, назва) бази, де є відкинуті виміри — для кнопки «виконати там»."""
+
+
+def _wants_ai_retry(
+    services: BotServices, query: DonorQuery, *, ai_explained: bool, ai_refine: bool
+) -> bool:
+    """Чи додавати кнопку «🧠 Уточнити через ШІ» під картку результату.
+
+    Правило: кнопка є на КОЖНІЙ словниковій/вільній картці (коли ШІ ввімкнено) —
+    завжди для вільного тексту (`ai_refine`) й ОБОВʼЯЗКОВО, коли щось не впізнано
+    (`query.unrecognized`, напр. «не впізнав як країну»). Це головний фікс: навіть
+    коли словник не розпізнав coverage, кнопка дає переграти через ШІ.
+
+    НЕ дублюємо на картці, що вже пройшла ШІ (`ai_explained`) — там уточнювати
+    нема сенсу, результат уже від ШІ."""
+    if services.ai is None or ai_explained:
+        return False
+    return ai_refine or bool(query.unrecognized)
 
 
 def _compute(dataset, query: DonorQuery) -> tuple[QueryResult, Recommendations]:
@@ -161,6 +184,7 @@ async def show_both_bases(
     *,
     explicit_both: bool = False,
     ai_explained: bool = False,
+    ai_refine: bool = False,
 ) -> None:
     """Зведений показ по ОБОХ базах — коли базу в запиті не назвали.
 
@@ -232,7 +256,10 @@ async def show_both_bases(
             ai_explained=ai_explained,
         ),
         reply_markup=both_bases_menu(
-            bases, ai_retry=bool(query.unrecognized) and services.ai is not None
+            bases,
+            ai_retry=_wants_ai_retry(
+                services, query, ai_explained=ai_explained, ai_refine=ai_refine
+            ),
         ),
     )
 
@@ -244,6 +271,7 @@ async def show_result(
     user_id: int,
     *,
     ai_explained: bool = False,
+    ai_refine: bool = False,
 ) -> ExecutedQuery | None:
     """Рахує запит і показує картку з кнопками.
 
@@ -254,7 +282,9 @@ async def show_result(
     унікальний підсумок), тому йде окремим шляхом. `ai_explained` — чи фільтр
     склав ШІ (тоді картка підписує рядок запиту «ШІ зрозумів як»)."""
     if query.is_multi_country:
-        await show_multi_country(target, services, query, user_id, ai_explained=ai_explained)
+        await show_multi_country(
+            target, services, query, user_id, ai_explained=ai_explained, ai_refine=ai_refine
+        )
         return None
 
     message = target.message if isinstance(target, CallbackQuery) else target
@@ -283,8 +313,9 @@ async def show_result(
             has_recommendations=not executed.recommendations.is_empty,
             has_country=query.country is not None,
             run_in=executed.alt_base,
-            # Частину запиту не зрозуміли й ШІ ввімкнено → даємо «уточнити через ШІ».
-            ai_retry=bool(query.unrecognized) and services.ai is not None,
+            ai_retry=_wants_ai_retry(
+                services, query, ai_explained=ai_explained, ai_refine=ai_refine
+            ),
         ),
     )
     return executed
@@ -297,6 +328,7 @@ async def show_multi_country(
     user_id: int,
     *,
     ai_explained: bool = False,
+    ai_refine: bool = False,
 ) -> None:
     """Рахує й показує запит по СПИСКУ країн: розклад + унікальний підсумок."""
     message = target.message if isinstance(target, CallbackQuery) else target
@@ -326,9 +358,16 @@ async def show_multi_country(
 
     # У журнал — лише зведене число, без доменів.
     services.action_log.add(user_id, render_multi_summary(result))
+    ai_retry = _wants_ai_retry(services, query, ai_explained=ai_explained, ai_refine=ai_refine)
+    if query.section_key == "mordy":
+        markup = stop_check_menu(ai_retry=ai_retry)
+    else:
+        # Не-Морди: базове меню — лише «До меню». Кнопку ШІ додаємо через
+        # ai_retry_menu (та сама пара: «Уточнити через ШІ» + «До меню»).
+        markup = ai_retry_menu() if ai_retry else back_to_menu()
     await status.edit_text(
         render_multi_country(result, suggestions=suggestions, ai_explained=ai_explained),
-        reply_markup=stop_check_menu() if query.section_key == "mordy" else back_to_menu(),
+        reply_markup=markup,
     )
 
 
@@ -360,6 +399,7 @@ async def show_country_breakdown(
     *,
     both: bool,
     ai_explained: bool = False,
+    ai_refine: bool = False,
 ) -> None:
     """Розбивка по країнах: топ-N + «Разом» + «…та ще N», з кнопкою «показати всі».
 
@@ -390,7 +430,13 @@ async def show_country_breakdown(
             )
             await status.edit_text(
                 render_both_bases(query, blocks),
-                reply_markup=both_bases_menu(bases, country_breakdown=True),
+                reply_markup=both_bases_menu(
+                    bases,
+                    country_breakdown=True,
+                    ai_retry=_wants_ai_retry(
+                        services, query, ai_explained=ai_explained, ai_refine=ai_refine
+                    ),
+                ),
             )
             return
 
@@ -409,7 +455,14 @@ async def show_country_breakdown(
         render_country_breakdown(
             result, dist, top_n=COUNTRY_BREAKDOWN_TOP_N, ai_explained=ai_explained
         ),
-        reply_markup=result_menu(query.section_key, has_recommendations=False, all_countries=True),
+        reply_markup=result_menu(
+            query.section_key,
+            has_recommendations=False,
+            all_countries=True,
+            ai_retry=_wants_ai_retry(
+                services, query, ai_explained=ai_explained, ai_refine=ai_refine
+            ),
+        ),
     )
 
 

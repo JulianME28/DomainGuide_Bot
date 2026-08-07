@@ -135,6 +135,8 @@ async def handle_free_text(message: Message, services: BotServices, state: FSMCo
             parsed.query,
             message.from_user.id,
             both=parsed.both_bases or not parsed.section_named,
+            # Словниковий/вільний розбір → кнопка «Уточнити через ШІ» на картці.
+            ai_refine=True,
         )
         return
 
@@ -149,9 +151,10 @@ async def handle_free_text(message: Message, services: BotServices, state: FSMCo
             parsed.query,
             message.from_user.id,
             explicit_both=parsed.both_bases,
+            ai_refine=True,
         )
         return
-    await show_result(message, services, parsed.query, message.from_user.id)
+    await show_result(message, services, parsed.query, message.from_user.id, ai_refine=True)
 
 
 @router.message()

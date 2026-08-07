@@ -381,6 +381,7 @@ async def receive_free_text(message: Message, services: BotServices, state: FSMC
             parsed.query,
             message.from_user.id,
             both=parsed.both_bases or not parsed.section_named,
+            ai_refine=True,
         )
         return
 
@@ -395,9 +396,10 @@ async def receive_free_text(message: Message, services: BotServices, state: FSMC
             parsed.query,
             message.from_user.id,
             explicit_both=parsed.both_bases,
+            ai_refine=True,
         )
         return
-    await show_result(message, services, parsed.query, message.from_user.id)
+    await show_result(message, services, parsed.query, message.from_user.id, ai_refine=True)
 
 
 # ---------------------------------------------------------------------------
