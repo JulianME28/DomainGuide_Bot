@@ -211,6 +211,71 @@ class TestРозпізнаванняКраїни:
         assert resolve_country("скільки даних") is None
 
 
+# Додані країни СНД/Азії: код → (назва_укр, доменна зона).
+_NEW_COUNTRIES = {
+    "ru": ("Росія", ".ru"),
+    "by": ("Білорусь", ".by"),
+    "md": ("Молдова", ".md"),
+    "ge": ("Грузія", ".ge"),
+    "am": ("Вірменія", ".am"),
+    "az": ("Азербайджан", ".az"),
+    "kz": ("Казахстан", ".kz"),
+    "uz": ("Узбекистан", ".uz"),
+    "kg": ("Киргизстан", ".kg"),
+    "tj": ("Таджикистан", ".tj"),
+}  # fmt: skip
+
+
+class TestНовіКраїниСНД:
+    """Додані країни СНД/Азії — розпізнаються ОБОМА шляхами (словник + каталог ШІ)."""
+
+    @pytest.mark.parametrize("code", list(_NEW_COUNTRIES))
+    def test_країна_є_і_зона_сходиться(self, code):
+        name_uk, zone = _NEW_COUNTRIES[code]
+        country = country_by_code(code)
+        assert country is not None and country.name_uk == name_uk
+        assert country.language is not None  # інваріант: мова існує у словнику
+        assert country_by_zone(zone) is country  # зона → та сама країна
+
+    @pytest.mark.parametrize("code", list(_NEW_COUNTRIES))
+    def test_розпізнається_за_назвою(self, code):
+        assert resolve_country(_NEW_COUNTRIES[code][0]) is country_by_code(code)
+
+    def test_відмінки_й_синоніми(self):
+        assert resolve_country("по Росії") is country_by_code("ru")
+        assert resolve_country("рф") is country_by_code("ru")
+        assert resolve_country("Russia") is country_by_code("ru")
+        assert resolve_country("россия") is country_by_code("ru")
+        assert resolve_country("Azerbaijan") is country_by_code("az")
+        assert resolve_country("в узбекистані") is country_by_code("uz")
+        assert resolve_country("Беларусь") is country_by_code("by")
+
+    def test_зони_не_конфліктують(self):
+        for code, (_name, zone) in _NEW_COUNTRIES.items():
+            assert country_by_zone(zone) is country_by_code(code)
+        # Бельгія (.be) НЕ сплуталась із Білоруссю (.by) — різні коди й зони.
+        assert country_by_zone(".be") is country_by_code("be")
+        assert country_by_zone(".by") is country_by_code("by")
+
+    def test_каталог_ші_містить_нові_коди(self):
+        """ШІ-шлях (whitelist) теж бачить нові країни — не відкине їх."""
+        from app.llm.interpreter import build_catalog
+
+        catalog = build_catalog()
+        for code in _NEW_COUNTRIES:
+            assert f"{code}=" in catalog
+
+    def test_збійний_запит_усі_чотири_розпізнані(self):
+        """Точний запит користувача: усі 4 країни в розкладі, нічого в «не зрозумів»."""
+        from app.text.freeform import parse_free_text
+
+        parsed = parse_free_text("Польща Росія Азербайджан Узбекистан обидві бази")
+        assert parsed.query.is_multi_country
+        assert {c.code for c in parsed.query.countries} == {"pl", "ru", "az", "uz"}
+        assert parsed.unrecognized == ()
+        assert parsed.both_bases
+
+
 class TestКодиКраїнУСписку:
     """2-літерні коди країн — повністю в контексті переліку, мовчать у прозі."""
 
