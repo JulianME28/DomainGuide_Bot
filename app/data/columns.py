@@ -27,8 +27,15 @@ REQUIRED_ROLES = ("domain", "language", "dr", "traffic")
 #   outlinks — кількість вихідних лінків («Морди»)
 #   spam     — скільки з них заспамлені (заспамленість = spam / outlinks × 100%)
 #   geo      — країна походження трафіку у форматі «(cc, N)» («Меджик»)
-OPTIONAL_ROLES = ("outlinks", "spam", "geo")
+#   stop     — стовпець «Стоп» («Морди»): рядки зі значенням "Стоп" виключаються
+#              з усіх підрахунків ще при завантаженні
+OPTIONAL_ROLES = ("outlinks", "spam", "geo", "stop")
 KNOWN_ROLES = frozenset(REQUIRED_ROLES + OPTIONAL_ROLES)
+
+# «Мʼякі» ролі: якщо їхнього заголовка ще НЕМАЄ на аркуші — це не помилка, а
+# сумісність (стовпця поки не додали). Читач просто пропускає таку колонку, а
+# не валить читання бази. Решта ролей за відсутності заголовка — помилка.
+LENIENT_ROLES = frozenset({"stop"})
 
 
 class ColumnsConfigError(RuntimeError):
@@ -80,6 +87,14 @@ class SectionConfig:
     def has_geo(self) -> bool:
         """Чи підключена колонка GEO (країна походження трафіку, «Меджик»)."""
         return "geo" in self.columns
+
+    @property
+    def filters_stop(self) -> bool:
+        """Чи налаштовано стовпець «Стоп» (виключення рядків при завантаженні).
+
+        Лише «Морди». Якщо роль підключена, рядки зі значенням "Стоп" у цьому
+        стовпці виключаються з усіх підрахунків ще на етапі читання бази."""
+        return "stop" in self.columns
 
 
 @dataclass(frozen=True, slots=True)

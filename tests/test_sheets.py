@@ -112,6 +112,52 @@ class TestЗаглушка:
         assert reader.read_section(columns_config.section("submits")) == []
 
 
+class _FakeWorksheet:
+    """Мінімальний аркуш: віддає задані заголовки й по клітинці на колонку."""
+
+    def __init__(self, headers: list[str]) -> None:
+        self._headers = headers
+
+    def row_values(self, _row: int) -> list[str]:
+        return self._headers
+
+    def batch_get(self, ranges, major_dimension: str = "COLUMNS"):
+        # По одному значенню на кожну запитану колонку — вміст тут не важливий.
+        return [[["x"]] for _ in ranges]
+
+
+class TestМʼякаРольСтоп:
+    """Стовпець «Стоп» — мʼяка роль: його відсутність не валить читання Морд."""
+
+    @pytest.fixture
+    def reader(self, tmp_path):
+        key = tmp_path / "credentials.json"
+        key.write_text(
+            json.dumps({"type": "service_account", "client_email": "b@e"}), encoding="utf-8"
+        )
+        return SheetsReader("id", key)
+
+    def test_відсутній_стовпець_стоп_не_помилка(self, reader, columns_config, monkeypatch):
+        headers = ["Domain", "Мова", "DR", "Traffic", "GEO", "Вихідні", "Заспамленість"]
+        monkeypatch.setattr(reader, "_open_worksheet", lambda name: _FakeWorksheet(headers))
+        rows = reader.read_section(columns_config.section("mordy"))  # НЕ кидає
+        assert rows and "stop" not in rows[0]  # мʼяку роль просто пропущено
+        assert "domain" in rows[0]  # решта ролей прочитані як раніше
+
+    def test_наявний_стовпець_стоп_читається(self, reader, columns_config, monkeypatch):
+        headers = ["Domain", "Мова", "DR", "Traffic", "GEO", "Вихідні", "Заспамленість", "Стоп"]
+        monkeypatch.setattr(reader, "_open_worksheet", lambda name: _FakeWorksheet(headers))
+        rows = reader.read_section(columns_config.section("mordy"))
+        assert rows and "stop" in rows[0]
+
+    def test_відсутня_ЗВИЧАЙНА_колонка_досі_помилка(self, reader, columns_config, monkeypatch):
+        # DR — не мʼяка роль: її відсутність має лишатися явною помилкою.
+        headers = ["Domain", "Мова", "Traffic", "GEO", "Вихідні", "Заспамленість", "Стоп"]
+        monkeypatch.setattr(reader, "_open_worksheet", lambda name: _FakeWorksheet(headers))
+        with pytest.raises(SheetsError, match="DR"):
+            reader.read_section(columns_config.section("mordy"))
+
+
 class TestТількиЧитання:
     def test_scope_лише_на_читання(self):
         """Навіть за помилки в коді бот фізично не змінить таблицю."""

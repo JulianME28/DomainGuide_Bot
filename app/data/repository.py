@@ -46,6 +46,30 @@ class SectionReader(Protocol):
 STOP_MORDY_SHEET = "Стоп Морди"
 
 
+def _is_stop(value: object) -> bool:
+    """Чи це «стоп»-позначка у стовпці «Стоп».
+
+    Толерантно до пробілів і регістру: «Стоп», « стоп », «СТОП» → True.
+    Порожньо / None / будь-що інше → False (донор лишається живим)."""
+    return str(value or "").strip().casefold() == "стоп"
+
+
+def _drop_stop_rows(rows: list[dict[str, str]]) -> tuple[list[dict[str, str]], int]:
+    """Прибирає рядки зі «Стоп» у стовпці «Стоп» ще ДО побудови донорів.
+
+    Так «стоп»-донори не потрапляють у пам'ять узагалі — їх немає ніде: ні в
+    кількості, ні в розбивці, ні в coverage, ні в середніх. Повертає (рядки без
+    «стопів», скільки виключено)."""
+    kept: list[dict[str, str]] = []
+    stopped = 0
+    for row in rows:
+        if _is_stop(row.get("stop")):
+            stopped += 1
+            continue
+        kept.append(row)
+    return kept, stopped
+
+
 def build_donors(rows: list[dict[str, str]]) -> tuple[tuple[Donor, ...], int]:
     """Перетворює сирі рядки таблиці на список донорів.
 
@@ -282,6 +306,29 @@ class DonorRepository:
                 error=str(exc),
             )
 
+        rows_read = len(rows)
+
+        # Стоп-фільтр (лише «Морди», стовпець «Стоп»). Виключаємо ще ДО побудови
+        # донорів, щоб «стоп»-рядки не потрапили в пам'ять узагалі.
+        stopped = 0
+        if section.filters_stop:
+            if rows and not any("stop" in row for row in rows):
+                # Роль «Стоп» налаштована, але стовпця на аркуші немає (скрипт
+                # ще не проставив або зламався). Безпечний дефолт — лишаємо всіх
+                # донорів; але кажемо про це ГУЧНО, щоб мовчазна відмова фільтра
+                # не лишилась непоміченою.
+                logger.warning(
+                    "«%s»: УВАГА — стовпця «Стоп» немає, стоп-фільтр НЕ застосовано; "
+                    "усі донори рахуються живими.",
+                    section.title,
+                )
+            else:
+                rows, stopped = _drop_stop_rows(rows)
+                if stopped:
+                    logger.info(
+                        "«%s»: виключено %d донорів за стовпцем «Стоп».", section.title, stopped
+                    )
+
         donors, skipped = build_donors(rows)
 
         if skipped:
@@ -294,8 +341,9 @@ class DonorRepository:
             donors=donors,
             loaded_at=now,
             available=True,
-            rows_read=len(rows),
+            rows_read=rows_read,
             rows_skipped=skipped,
+            rows_stopped=stopped,
             tracks_spam=section.tracks_spam,
             tracks_geo=section.has_geo,
         )

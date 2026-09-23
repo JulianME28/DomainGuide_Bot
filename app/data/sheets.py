@@ -26,7 +26,7 @@ import gspread
 import requests
 from google.oauth2.service_account import Credentials
 
-from app.data.columns import SectionConfig
+from app.data.columns import LENIENT_ROLES, SectionConfig
 from app.logging_setup import get_logger
 
 logger = get_logger(__name__)
@@ -343,6 +343,17 @@ class SheetsReader:
         for role, header in section.columns.items():
             position = _match_header(headers, header)
             if position is None:
+                # Мʼяка роль (напр. «Стоп»): заголовка ще немає — це не помилка,
+                # а сумісність. Пропускаємо колонку; репозиторій побачить її
+                # відсутність і попередить у лог. Решта ролей — помилка як раніше.
+                if role in LENIENT_ROLES:
+                    logger.info(
+                        "На аркуші «%s» немає колонки «%s» (роль %s) — пропускаю (мʼяка роль).",
+                        section.sheet,
+                        header,
+                        role,
+                    )
+                    continue
                 raise SheetsError(
                     f"На аркуші «{section.sheet}» немає колонки «{header}» (роль {role}).\n"
                     f"Наявні колонки: {', '.join(h for h in headers if h.strip())}\n"

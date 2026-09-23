@@ -53,10 +53,14 @@ class TestБойовийКонфіг:
             "geo",
             "outlinks",
             "spam",
+            "stop",
         }
         assert mordy.columns["outlinks"] == "Вихідні"
         assert mordy.columns["spam"] == "Заспамленість"
         assert mordy.columns["geo"] == "GEO"
+        assert mordy.columns["stop"] == "Стоп"
+        assert mordy.filters_stop  # стоп-фільтр підключено
+        assert not columns_config.section("magic").filters_stop  # Меджик — ні
 
     def test_сабміти_це_заглушка(self, columns_config):
         submits = columns_config.section("submits")
